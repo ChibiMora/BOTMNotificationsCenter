@@ -46,4 +46,28 @@ describe('schedule', () => {
     for (const e of ['* * * *', '61 * * * *', 'x * * * *', '*/0 * * * *'])
       expect(() => cronSchedule(e)).toThrow();
   });
+  describe('previousDue (catch-up, §8.3)', () => {
+    it('cron: the most recent matching minute at or before now', () => {
+      const s = cronSchedule('0 1 * * *');
+      expect(s.previousDue(at('2026-10-06T13:00:00Z'))).toEqual(at('2026-10-06T01:00:00Z'));
+      expect(s.previousDue(at('2026-10-06T00:30:00Z'))).toEqual(at('2026-10-05T01:00:00Z'));
+      expect(s.previousDue(at('2026-10-06T01:00:45Z'))).toEqual(at('2026-10-06T01:00:00Z'));
+    });
+    it('cron: undefined when nothing matched within the bounded walk', () => {
+      expect(cronSchedule('0 0 31 2 *').previousDue(at('2026-10-06T13:00:00Z'))).toBeUndefined();
+    });
+    it('month start: the latest 00:05 UTC on the 1st', () => {
+      expect(MONTH_START.previousDue(at('2026-10-06T13:00:00Z'))).toEqual(at('2026-10-01T00:05:00Z'));
+      expect(MONTH_START.previousDue(at('2026-10-01T00:04:00Z'))).toEqual(at('2026-09-01T00:05:00Z'));
+    });
+    it('anyOf: the latest defined previousDue of its parts', () => {
+      const s = anyOf(cronSchedule('0 6 * * *'), MONTH_START, intervalSchedule(60));
+      expect(s.previousDue(at('2026-10-06T13:00:00Z'))).toEqual(at('2026-10-06T06:00:00Z'));
+      expect(s.previousDue(at('2026-10-01T03:00:00Z'))).toEqual(at('2026-10-01T00:05:00Z'));
+      expect(anyOf(intervalSchedule(60)).previousDue(at('2026-10-06T13:00:00Z'))).toBeUndefined();
+    });
+    it('interval: undefined (interval timers need no catch-up)', () => {
+      expect(intervalSchedule(60).previousDue(at('2026-10-06T13:00:00Z'))).toBeUndefined();
+    });
+  });
 });

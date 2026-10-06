@@ -6,7 +6,7 @@ import { FixedClock } from '../helpers/clock.js';
 import { createScheduler, startScheduler, timers } from '../../src/scheduler/index.js';
 import { FakeQueue } from '../helpers/fakeQueue.js';
 import { makeNotification, makeDelivery } from '../helpers/factories.js';
-import { intervalSchedule } from '../../src/scheduler/schedule.js';
+import { cronSchedule, intervalSchedule } from '../../src/scheduler/schedule.js';
 import { Leader, lockName } from '../../src/scheduler/leader.js';
 
 const db = testDb();
@@ -124,5 +124,23 @@ describe('scheduler', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('catch-up: a leader runs the most recent missed expiry once, from scheduled_runs, and records the new start', async () => {
+    const clock = new FixedClock(new Date('2026-10-06T13:00:00Z'));
+    const deps = makeTestDeps({ db, clock });
+    await db('scheduled_runs')
+      .where({ name: 'expiry' })
+      .update({ last_started_at: new Date('2026-10-04T01:00:00Z') });
+    const run = vi.fn(async () => undefined);
+    const s = createScheduler(
+      deps,
+      [{ name: 'expiry', leaderOnly: true, schedule: cronSchedule('0 1 * * *'), run }],
+      { isLeader: () => true, verifyLeader: async () => true },
+    );
+    await s.tick(clock.now());
+    await s.tick(new Date('2026-10-06T13:00:01Z'));
+    expect(run).toHaveBeenCalledTimes(1);
+    const row = await db('scheduled_runs').where({ name: 'expiry' }).first();
+    expect(row).toMatchObject({ last_started_at: clock.now(), last_status: 'ok' });
   });
 });

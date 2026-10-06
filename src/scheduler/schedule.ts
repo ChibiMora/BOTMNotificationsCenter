@@ -4,6 +4,9 @@
 export interface Schedule {
   /** True when a run is due at `now`, given when this timer last started (undefined = never in this process). */
   isDue(now: Date, lastStarted: Date | undefined): boolean;
+  /** The most recent due instant at or before `now` (whole minute), or undefined when there is none to catch up:
+   * interval schedules, or no match within the last 366 days. Used by the scheduler's catch-up of a missed run. */
+  previousDue(now: Date): Date | undefined;
 }
 
 const RANGES: Array<[number, number]> = [
@@ -36,6 +39,8 @@ function parseField(field: string, [min, max]: [number, number]): Set<number> {
 }
 
 const minuteOf = (d: Date) => Math.floor(d.getTime() / 60_000);
+/** How far back previousDue looks for a matching minute. */
+const MAX_LOOKBACK_MINUTES = 366 * 24 * 60;
 
 export function cronSchedule(expr: string): Schedule {
   const fields = expr.trim().split(/\s+/);
@@ -52,18 +57,35 @@ export function cronSchedule(expr: string): Schedule {
     mi!.has(d.getUTCMinutes()) && h!.has(d.getUTCHours()) && mon!.has(d.getUTCMonth() + 1) && dayMatches(d);
   return {
     isDue: (now, last) => matches(now) && (last === undefined || minuteOf(last) < minuteOf(now)),
+    previousDue: (now) => {
+      const start = minuteOf(now);
+      for (let m = start; m > start - MAX_LOOKBACK_MINUTES; m--) {
+        const d = new Date(m * 60_000);
+        if (matches(d)) return d;
+      }
+      return undefined;
+    },
   };
 }
 
 export function intervalSchedule(seconds: number): Schedule {
   return {
     isDue: (now, last) => last === undefined || now.getTime() - last.getTime() >= seconds * 1000,
+    // Interval timers already run at once when never started in this process; no catch-up needed.
+    previousDue: () => undefined,
   };
 }
 
 export function anyOf(...schedules: Schedule[]): Schedule {
   return {
     isDue: (now, last) => schedules.some((s) => s.isDue(now, last)),
+    previousDue: (now) =>
+      schedules
+        .map((s) => s.previousDue(now))
+        .reduce<Date | undefined>(
+          (a, b) => (b !== undefined && (a === undefined || b > a) ? b : a),
+          undefined,
+        ),
   };
 }
 

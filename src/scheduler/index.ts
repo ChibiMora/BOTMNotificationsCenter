@@ -2,6 +2,9 @@
 // leader-only timers run only while this process holds the leader lock (leader.ts).
 // Ownership is re-verified against MySQL immediately before each tick starts a leader-only run, but a brief
 // two-leader window (lock lost right after the check) cannot be fully excluded: leader-only timers MUST be idempotent.
+// Catch-up: on becoming leader the scheduler reads scheduled_runs.last_started_at once; a leader-only timer whose most
+// recent due time (Schedule.previousDue) is later than its last start runs once at the next tick — one run for the most
+// recent missed due time, never one per missed occurrence. A timer that never started anywhere (NULL) is not caught up.
 import type { Deps } from '../lib/deps.js';
 import type { Schedule } from './schedule.js';
 import { Leader } from './leader.js';
@@ -37,6 +40,33 @@ export interface LeaderGate {
 export function createScheduler(deps: Deps, list: Timer[], opts: LeaderGate) {
   const lastStarted = new Map<string, Date>();
   const inFlight = new Set<string>();
+  /** last_started_at per timer as read from scheduled_runs when this process last became leader. */
+  const recorded = new Map<string, Date>();
+  let wasLeader = false;
+  let loading: Promise<void> | undefined;
+
+  const loadRecordedStarts = async () => {
+    recorded.clear();
+    try {
+      const rows: Array<{ name: string; last_started_at: Date | null }> = await deps
+        .db('scheduled_runs')
+        .select('name', 'last_started_at');
+      for (const r of rows) if (r.last_started_at) recorded.set(r.name, new Date(r.last_started_at));
+    } catch (e) {
+      // No catch-up this leadership stint; scheduled runs are unaffected.
+      deps.log.error({ err: e }, 'timer bookkeeping failed');
+    }
+  };
+
+  /** The missed due time to catch up for a leader-only timer, or undefined when nothing was missed. */
+  const missedDue = (t: Timer, now: Date): Date | undefined => {
+    const a = lastStarted.get(t.name);
+    const b = recorded.get(t.name);
+    const last = a === undefined ? b : b === undefined || a > b ? a : b;
+    if (last === undefined) return undefined;
+    const due = t.schedule.previousDue(now);
+    return due !== undefined && due > last ? due : undefined;
+  };
 
   const record = (name: string, fields: Record<string, unknown>) =>
     deps
@@ -77,13 +107,26 @@ export function createScheduler(deps: Deps, list: Timer[], opts: LeaderGate) {
   return {
     /** Starts every due timer; resolves when they have all finished. A failing timer never stops the others. */
     async tick(now: Date): Promise<void> {
-      let due = list.filter(
-        (t) => (!t.leaderOnly || opts.isLeader()) && t.schedule.isDue(now, lastStarted.get(t.name)),
-      );
+      const leader = list.some((t) => t.leaderOnly) && opts.isLeader();
+      if (leader && !wasLeader) loading = loadRecordedStarts();
+      wasLeader = leader;
+      if (leader && loading) await loading;
+      const catchUp = new Map<string, Date>();
+      let due = list.filter((t) => {
+        if (t.leaderOnly && !leader) return false;
+        if (t.schedule.isDue(now, lastStarted.get(t.name))) return true;
+        const missed = t.leaderOnly ? missedDue(t, now) : undefined;
+        if (missed) catchUp.set(t.name, missed);
+        return missed !== undefined;
+      });
       // Not the holder any more: leader-only timers are left alone, exactly as on a non-leader (nothing recorded).
       if (due.some((t) => t.leaderOnly) && opts.verifyLeader) {
         const mine = await opts.verifyLeader().catch(() => false);
         if (!mine) due = due.filter((t) => !t.leaderOnly);
+      }
+      for (const t of due) {
+        const missed = catchUp.get(t.name);
+        if (missed) deps.log.info({ timer: t.name, missedDueAt: missed }, 'timer catch-up');
       }
       await Promise.all(
         due.map((t) =>
