@@ -1,4 +1,4 @@
-// §11.4 job outcomes, queue depth/oldest age, scheduled-run health, deliveries per account per day (U10).
+// §11.4 job outcomes, queue depth/oldest age, scheduled-run health (U10).
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { testConfig, testDb, resetDb } from '../helpers/db.js';
 import { FixedClock } from '../helpers/clock.js';
@@ -7,9 +7,7 @@ import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { DbQueue } from '../../src/queue/dbQueue.js';
 import { createScheduler } from '../../src/scheduler/index.js';
 import { intervalSchedule } from '../../src/scheduler/schedule.js';
-import { deliveriesPerAccountDay } from '../../src/scheduler/housekeeping.js';
 import { createQueue } from '../../src/queue/index.js';
-import { makeDelivery, makeNotification } from '../helpers/factories.js';
 
 const db = testDb();
 const config = { ...testConfig(), queueImpl: 'db', jobMaxAttempts: 2 } as ReturnType<typeof testConfig>;
@@ -106,20 +104,5 @@ describe('job metrics', () => {
     expect(runs).toEqual(
       expect.arrayContaining(['rescan:ok', 'due_send:failed', 'expiry:skipped', 'expiry:ok']),
     );
-  });
-
-  it('deliveries_per_account_day max and p99 over today (UTC)', async () => {
-    const deps = makeTestDeps({ db, clock, metrics });
-    const n = await makeNotification(db, 'filter');
-    const at = (account_id: number, iso: string) =>
-      makeDelivery(db, { notification_id: n.id, account_id }, new Date(iso));
-    for (let i = 0; i < 3; i++) await at(1, '2026-10-03T23:00:00Z'); // yesterday: ignored
-    await at(1, '2026-10-04T01:00:00Z');
-    await at(2, '2026-10-04T02:00:00Z');
-    await at(2, '2026-10-04T03:00:00Z');
-    await at(3, '2026-10-04T04:00:00Z');
-    await deliveriesPerAccountDay(deps);
-    expect(named('deliveries_per_account_day_max')[0]?.value).toBe(2);
-    expect(named('deliveries_per_account_day_p99')[0]?.value).toBe(2);
   });
 });

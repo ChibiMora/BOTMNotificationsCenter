@@ -41,20 +41,10 @@ never account ids, notification ids, public ids, request paths, tokens, notifica
 | `housekeeping_enqueue_failed`        | count  | `type`                                                                            | `src/scheduler/housekeeping.ts`                               | housekeeping enqueue failures                |
 | `expiry_rows_archived`               | count  | none                                                                              | `src/scheduler/expiry.ts`                                     | §11.4 expiry                                 |
 | `expiry_run_stopped`                 | count  | `reason`                                                                          | `src/scheduler/expiry.ts`                                     | expiry run cut short                         |
-| `deliveries_per_account_day_max`     | gauge  | none                                                                              | `src/scheduler/housekeeping.ts`                               | §11.4 deliveries per account per day (abuse) |
-| `deliveries_per_account_day_p99`     | gauge  | none                                                                              | `src/scheduler/housekeeping.ts`                               | §11.4 deliveries per account per day (abuse) |
-| `deliveries_per_account_day_skipped` | count  | none                                                                              | `src/scheduler/housekeeping.ts`                               | §11.4 deliveries per account per day (abuse) |
 
-`deliveries_per_account_day_*` cover the current UTC day up to the housekeeping run, read through the **reader**
-(`DATABASE_READER_URL`). `notification_deliveries` has no `created_at` index and no migration was added: the first id
-created today is approximated by a binary search over the primary key (about log2(rows) point lookups), then the scan
-starts `DAY_START_ID_MARGIN` (100 000) ids earlier and filters `created_at >= dayStart` inside the range, so rows that
-concurrent writers committed out of `created_at` order around midnight are still counted. Both numbers are computed in
-SQL (per-account counts in a derived table, nearest-rank p99 with `ROW_NUMBER()` / `COUNT(*) OVER ()`), so one row
-comes back whatever the number of accounts. Cost grows with today's deliveries (+ at most the margin), not the table.
-The query carries `MAX_EXECUTION_TIME(5000)`; on a timeout (MySQL error 3024) the gauges are not emitted that run,
-a warn line is logged and `deliveries_per_account_day_skipped` (count, no dimensions) is incremented — housekeeping
-itself never fails because of it. With no deliveries today both gauges are emitted as 0.
+The §11.4 per-account-per-day abuse signal is not emitted; per-account spikes show in `event_delivery_inserted` and
+`account_recheck_deliveries_written`, and a per-account view would need a `created_at` index on
+`notification_deliveries`.
 
 `/healthz` and `/readyz` carry their own fixed `route` values (`/healthz`, `/readyz`) in `http_requests`,
 `http_request_duration_ms` and `http_5xx`, so probe traffic does not dominate `unmatched`. The worker counts
