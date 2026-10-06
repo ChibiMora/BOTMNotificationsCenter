@@ -8,8 +8,10 @@
 //   then skip them all).
 // - Fencing rule: every write a worker makes to a row it claimed (heartbeat, done, dead, back-to-queued) is guarded by
 //   `status = 'running' AND locked_by = <this worker> AND attempts = <the attempt it claimed>`. Connections disable
-//   mysql2 FOUND_ROWS, so update() returns rows CHANGED; 0 means the lease was lost (upkeep re-queued or dead-lettered
-//   the row and possibly another worker owns it now): the worker logs "lost lease" and does nothing else.
+//   mysql2 FOUND_ROWS, so update() returns rows CHANGED. The outcome writes always change `status`, so 0 there means
+//   the lease was lost (upkeep re-queued or dead-lettered the row and possibly another worker owns it now): the worker
+//   logs "lost lease" and does nothing else. A heartbeat can legitimately change nothing (same-second `locked_at`), so
+//   its 0 is confirmed by a read under the same fence before it reports "lease lost".
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { Knex } from 'knex';
@@ -258,15 +260,27 @@ export class DbQueue implements Queue {
 
   /** Update fenced to the lease this worker holds on `job` (see the fencing rule above). Returns rows changed. */
   private fenced(job: ClaimedJob, values: Record<string, unknown>): Promise<number> {
-    return this.parts
-      .db('jobs')
-      .where({
-        id: job.id,
-        status: 'running',
-        locked_by: this.workerId,
-        attempts: job.attempts,
-      })
-      .update(values);
+    return this.ownRow(job).update(values);
+  }
+
+  /** The row `job` as long as this worker still holds its lease (status running, locked by us, same attempt). */
+  private ownRow(job: ClaimedJob) {
+    return this.parts.db('jobs').where({
+      id: job.id,
+      status: 'running',
+      locked_by: this.workerId,
+      attempts: job.attempts,
+    });
+  }
+
+  /**
+   * Refreshes the lease. Rows CHANGED is 0 both when the lease is lost and when `locked_at` already holds this second
+   * (DATETIME is whole seconds), so a 0 is confirmed with a read under the same fence before aborting.
+   */
+  private async heartbeat(job: ClaimedJob): Promise<void> {
+    if ((await this.fenced(job, { locked_at: this.parts.clock.now() })) > 0) return;
+    if (await this.ownRow(job).first('id')) return;
+    throw new Error(`lease lost on job ${job.id} (attempt ${job.attempts}); abort`);
   }
 
   private async callOnDead(type: JobType, payload: object, error: Error, jobId: number): Promise<void> {
@@ -288,11 +302,7 @@ export class DbQueue implements Queue {
       if (typeof handler !== 'function') throw new Error(`no handler registered for job type "${job.type}"`);
       await handler(job.payload, {
         attempt: job.attempts,
-        heartbeat: async () => {
-          if ((await this.fenced(job, { locked_at: clock.now() })) === 0) {
-            throw new Error(`lease lost on job ${job.id} (attempt ${job.attempts}); abort`);
-          }
-        },
+        heartbeat: () => this.heartbeat(job),
       });
     } catch (e) {
       error = e instanceof Error ? e : new Error(String(e));
