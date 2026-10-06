@@ -4,7 +4,7 @@
  */
 import { parse } from 'csv-parse';
 
-export const CSV_HEADER = 'accountID';
+const CSV_HEADER = 'accountID';
 const ID_RE = /^[1-9][0-9]*$/;
 
 /** A shape violation; `message` is client-safe (the upload check maps it to a 400 VALIDATION_ERROR). */

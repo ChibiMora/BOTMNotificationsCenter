@@ -111,9 +111,9 @@ export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): 
  *  stamp created_at in different orders (a long fan-out insert that read the clock before midnight commits ids above
  *  rows stamped after it). 100k ids covers far more than any single open insert batch, and costs at most 100k extra
  *  primary-key rows in the scan; `created_at >= dayStart` inside the range keeps the count exact. */
-export const DAY_START_ID_MARGIN = 100_000;
+const DAY_START_ID_MARGIN = 100_000;
 /** Time budget (MySQL MAX_EXECUTION_TIME hint) for the aggregate query; over it the gauges are skipped this run. */
-export const DELIVERIES_PER_ACCOUNT_DAY_BUDGET_MS = 5000;
+const DELIVERIES_PER_ACCOUNT_DAY_BUDGET_MS = 5000;
 const ER_QUERY_TIMEOUT = 3024;
 
 /**

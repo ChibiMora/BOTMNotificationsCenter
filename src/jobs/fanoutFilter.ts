@@ -18,10 +18,10 @@ import { insertDeliveries } from '../lib/insertDeliveries.js';
 import { monthKey } from '../lib/time.js';
 
 /** Account ids read per page (§8.2: `a.id BETWEEN :lo AND :lo + 9999`). */
-export const ID_RANGE = 10_000;
+const ID_RANGE = 10_000;
 
 /** The notification if it is a filter notification that is active and not removed, else undefined. */
-export async function activeFilterNotification(db: Knex, id: number): Promise<NotificationRow | undefined> {
+async function activeFilterNotification(db: Knex, id: number): Promise<NotificationRow | undefined> {
   return activeFilterNotifications(db).where('n.id', id).first('n.*');
 }
 

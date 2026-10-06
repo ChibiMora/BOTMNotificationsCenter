@@ -1,5 +1,5 @@
 // Cancellation of scheduled sends (§7.4; B5, B6): due-send deletes cancelled rows, cancel_scheduled cleans up early.
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { testDb, resetDb } from '../helpers/db.js';
 import { lockWaits, ownLocks } from '../helpers/locks.js';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
@@ -268,5 +268,18 @@ describe('cancel_scheduled pages by id', () => {
       await holder.rollback();
     }
     expect(await ids()).toEqual(lockedRows);
+  });
+});
+
+describe('cancel_scheduled logs carry the enqueuing requestId (§9)', () => {
+  it('the done line carries payload.requestId', async () => {
+    const deps = makeTestDeps({ db });
+    const n = await makeNotification(db, 'filter', { active: true });
+    const info = vi.spyOn(deps.log, 'info');
+    await cancelScheduled(deps, { notificationId: n.id, requestId: 'req-1' }, ctx);
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ notificationId: n.id, requestId: 'req-1' }),
+      'cancel_scheduled done',
+    );
   });
 });

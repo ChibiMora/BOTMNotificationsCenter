@@ -8,7 +8,7 @@ import type { Deps } from '../lib/deps.js';
 import { createLogger } from '../lib/logger.js';
 import { emfMetrics } from '../lib/metrics.js';
 import { createQueue } from '../queue/index.js';
-import type { EventTrigger } from '../queue/queue.js';
+import { EVENT_TRIGGERS as TRIGGERS, type EventTrigger } from '../queue/queue.js';
 
 export type { EventTrigger } from '../queue/queue.js';
 
@@ -21,11 +21,8 @@ export interface TriggerEvent {
   occurrenceKey: string;
 }
 
-const EVENT_TRIGGERS: readonly string[] = [
-  'shipped',
-  'enrolled',
-  'preenrollAudiobook',
-] satisfies EventTrigger[];
+// Widened for `.includes` on an unvalidated string; the single definition lives in queue.ts.
+const EVENT_TRIGGERS: readonly string[] = TRIGGERS;
 const FAILED = 'trigger_enqueue_failed';
 
 const validAccountId = (id: unknown): id is number => Number.isSafeInteger(id) && (id as number) > 0;

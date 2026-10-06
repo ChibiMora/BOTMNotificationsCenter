@@ -14,7 +14,12 @@ import { monthKey } from '../lib/time.js';
 const PAGE = 500;
 
 /** Inserts this month's live delivery of every matching active filter notification for one account; returns the count. */
-export async function recheckAccount(deps: Deps, accountId: number): Promise<number> {
+export async function recheckAccount(
+  deps: Deps,
+  accountId: number,
+  ctx?: JobContext,
+  requestId?: string,
+): Promise<number> {
   // One instant and one month key for the whole call, so a call spanning a month boundary cannot split across keys.
   const t = deps.clock.now();
   const dedupeKey = monthKey(t);
@@ -38,7 +43,10 @@ export async function recheckAccount(deps: Deps, accountId: number): Promise<num
         }
         // One bad notification must not fail the job for the others; ids only, never the filters' content.
         deps.metrics.count('account_recheck_unusable_filters');
-        deps.log.error({ notificationId: n.id, accountId }, 'account_recheck: unusable filters, skipped');
+        deps.log.warn(
+          { err, notificationId: n.id, accountId, requestId },
+          'account_recheck: unusable filters, skipped',
+        );
         continue;
       }
       const match = await forAccount(eligibility, accountId).first();
@@ -50,6 +58,8 @@ export async function recheckAccount(deps: Deps, accountId: number): Promise<num
       const result = await insertDeliveries(deps.db, [row], { now: deps.clock.now() });
       written += result.inserted;
     }
+    // Like fan-out: renew the lease after each page; a lost lease throws and ends the run.
+    await ctx?.heartbeat();
     if (page.length < PAGE) {
       return written;
     }
@@ -61,8 +71,8 @@ export const accountRecheck: (
   deps: Deps,
   payload: JobPayloads['account_recheck'],
   ctx: JobContext,
-) => Promise<void> = async (deps, payload) => {
-  const written = await recheckAccount(deps, payload.accountId);
+) => Promise<void> = async (deps, payload, ctx) => {
+  const written = await recheckAccount(deps, payload.accountId, ctx, payload.requestId);
   deps.metrics.count('account_recheck_deliveries_written', written);
   deps.log.info(
     { accountId: payload.accountId, written, requestId: payload.requestId },

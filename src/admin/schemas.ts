@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { limitQuery, queryValue } from '../lib/pageSize.js';
 import { validatePath } from '../lib/urls.js';
+import { EVENT_TRIGGERS } from '../queue/queue.js';
 
 // Control characters, line breaks (incl. U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR) and tabs, `<`, `>`
 // and Unicode direction overrides U+202A–U+202E, U+2066–U+2069 (§3.3).
@@ -32,7 +33,7 @@ export const pathField = (field: string, max: number) =>
     .refine(validatePath, `${field} must be a relative path`);
 
 /** The content fields shared by every create (and, later, the update). */
-export const contentFields = {
+const contentFields = {
   image: pathField('image', 1024),
   headline: plainText('headline'),
   subheadline: plainText('subheadline'),
@@ -81,8 +82,6 @@ export const createFilterSchema = z.strictObject({
   filters: filtersSchema.optional(),
 });
 
-export const EVENT_TRIGGERS = ['shipped', 'enrolled', 'preenrollAudiobook'] as const;
-
 export const createEventSchema = z.strictObject({
   ...contentFields,
   isActive: z.boolean({ message: 'isActive must be a boolean' }),
@@ -120,8 +119,6 @@ export const updateNotificationSchema = z.union(
   ],
   updateBodyErrors,
 );
-
-export type UpdateNotificationBody = z.output<typeof updateNotificationSchema>;
 
 /** The `notification` part of POST /admin/notifications/imports (§3.4); `liveDate` is parsed by the handler. */
 export const createImportSchema = z.strictObject({

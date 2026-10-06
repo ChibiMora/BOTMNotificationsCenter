@@ -28,6 +28,7 @@ export async function cancelScheduledRun(
   notificationId: number,
   ctx: JobContext,
   chunk = CHUNK,
+  requestId?: string,
 ): Promise<number> {
   let total = 0;
   let lastId = 0;
@@ -45,7 +46,7 @@ export async function cancelScheduledRun(
     const deleted = await deleteCancelledLocked(deps.db, notificationId, ids);
     if (deleted === CONTENDED) {
       deps.log.info(
-        { notificationId },
+        { notificationId, requestId },
         'cancel_scheduled: notification row locked elsewhere, run ended early',
       );
       deps.metrics.count('cancel_scheduled_contended', 1);
@@ -57,7 +58,7 @@ export async function cancelScheduledRun(
     await ctx.heartbeat();
   }
   deps.metrics.count('cancel_scheduled_deleted', total);
-  deps.log.info({ notificationId, deleted: total }, 'cancel_scheduled done');
+  deps.log.info({ notificationId, deleted: total, requestId }, 'cancel_scheduled done');
   return total;
 }
 
@@ -65,6 +66,6 @@ export const cancelScheduled: (
   deps: Deps,
   payload: JobPayloads['cancel_scheduled'],
   ctx: JobContext,
-) => Promise<void> = async (deps, { notificationId }, ctx) => {
-  await cancelScheduledRun(deps, notificationId, ctx);
+) => Promise<void> = async (deps, { notificationId, requestId }, ctx) => {
+  await cancelScheduledRun(deps, notificationId, ctx, CHUNK, requestId);
 };

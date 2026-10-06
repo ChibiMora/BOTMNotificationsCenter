@@ -61,17 +61,20 @@ export const eventDelivery: (
   deps: Deps,
   payload: JobPayloads['event_delivery'],
   ctx: JobContext,
-) => Promise<void> = async (deps, payload) => {
+) => Promise<void> = async (deps, payload, ctx) => {
   // Ids only: never the payload's content (the key may be the bad field). No throw: a retry cannot fix it.
   const rejectPayload = (invalid: string) => {
     const raw: unknown = typeof payload === 'object' && payload !== null ? payload.accountId : undefined;
     const accountId = Number.isSafeInteger(raw) ? raw : undefined;
-    deps.log.warn({ invalid, accountId }, 'event_delivery: invalid payload, dropped');
+    const rid: unknown = typeof payload === 'object' && payload !== null ? payload.requestId : undefined;
+    const requestId = typeof rid === 'string' ? rid : undefined;
+    const err = new Error(`event_delivery payload: invalid ${invalid}`);
+    deps.log.warn({ err, invalid, accountId, requestId }, 'event_delivery: invalid payload, dropped');
     deps.metrics.count('event_delivery_invalid_payload', 1);
   };
   const invalid = invalidField(payload);
   if (invalid !== null) return rejectPayload(invalid);
-  const { type, accountId, occurredAt, occurrenceKey } = payload;
+  const { type, accountId, occurredAt, occurrenceKey, requestId } = payload;
   // Truncated to whole seconds because the DATETIME columns (due_at, sent_at, created_at) store whole seconds.
   const occurred = truncateToSecond(new Date(occurredAt));
   const notifications: Array<{ id: number; delay: number | null }> = await deps
@@ -104,7 +107,7 @@ export const eventDelivery: (
   if (tooOld > 0) {
     deps.metrics.count('event_delivery_too_old', tooOld, { type });
     deps.log.warn(
-      { accountId, occurrenceKey, dropped: tooOld },
+      { accountId, occurrenceKey, dropped: tooOld, requestId },
       'event_delivery: due_at before window start, dropped',
     );
   }
@@ -115,15 +118,24 @@ export const eventDelivery: (
     for (const r of rows) r.sentAt = r.dueAt <= insertNow ? insertNow : null;
     const result = await insertDeliveries(deps.db, rows, { now: insertNow });
     if (result.unknownAccounts.length > 0) {
-      deps.log.warn({ accountId, occurrenceKey }, 'event_delivery: unknown account, event dropped');
+      deps.log.warn(
+        { accountId, occurrenceKey, requestId },
+        'event_delivery: unknown account, event dropped',
+      );
       deps.metrics.count('event_delivery_unknown_account', 1, { type });
       return;
     }
     deps.metrics.count('event_delivery_inserted', result.inserted, { type });
     deps.log.info(
-      { accountId, occurrenceKey, inserted: result.inserted, alreadyDelivered: result.alreadyDelivered },
+      {
+        accountId,
+        occurrenceKey,
+        inserted: result.inserted,
+        alreadyDelivered: result.alreadyDelivered,
+        requestId,
+      },
       'event_delivery done',
     );
   }
-  await recheckAccount(deps, accountId);
+  await recheckAccount(deps, accountId, ctx, requestId);
 };

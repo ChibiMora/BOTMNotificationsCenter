@@ -291,6 +291,7 @@ describe('process_import', () => {
         duplicatesIgnored: 2,
         errors: 2,
         deliveriesInserted: 3,
+        requestId: payload.requestId,
       });
       expect(counted(t)).toEqual([
         { name: 'process_import_deliveries_written', value: 3 },
@@ -316,7 +317,12 @@ describe('process_import', () => {
       await processImport(t.deps, payload, ctx);
       expect(counted(t)).toEqual([{ name: 'process_import_failed', value: 1, dims: { reason: 'removed' } }]);
       expect(warns()).toHaveLength(1);
-      expect(warns()[0]![0]).toEqual({ importId: payload.importId, runId: payload.runId, reason: 'removed' });
+      expect(warns()[0]![0]).toEqual({
+        importId: payload.importId,
+        runId: payload.runId,
+        reason: 'removed',
+        requestId: payload.requestId,
+      });
     });
 
     it('removed while a concurrent copy already finished the run: no failed metric, no warn', async () => {
@@ -350,6 +356,7 @@ describe('process_import', () => {
         importId: payload.importId,
         runId: payload.runId,
         reason: 'file_missing',
+        requestId: payload.requestId,
       });
     });
 
@@ -360,7 +367,12 @@ describe('process_import', () => {
       expect(await runStatus(payload.runId)).toBe('failed');
       expect(counted(t)).toEqual([{ name: 'process_import_failed', value: 1, dims: { reason: 'dead' } }]);
       expect(warns()).toHaveLength(1);
-      expect(warns()[0]![0]).toEqual({ importId: payload.importId, runId: payload.runId, reason: 'dead' });
+      expect(warns()[0]![0]).toEqual({
+        importId: payload.importId,
+        runId: payload.runId,
+        reason: 'dead',
+        requestId: payload.requestId,
+      });
       await onProcessImportDead(t.deps, payload, new Error('boom'));
       expect(counted(t)).toHaveLength(1);
       expect(warns()).toHaveLength(1);
@@ -377,5 +389,23 @@ describe('process_import', () => {
       expect(counted(t).slice(before)).toEqual([]);
       expect(warns()).toHaveLength(0);
     });
+  });
+});
+
+describe('process_import logs carry the enqueuing requestId (§9)', () => {
+  it('completed and failed lines both carry payload.requestId', async () => {
+    const done = await upload('accountID\n5\n');
+    const info = vi.spyOn(done.t.deps.log, 'info');
+    await processImport(done.t.deps, done.payload, ctx);
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: 'r' }),
+      'process_import completed',
+    );
+
+    const gone = await upload('accountID\n5\n');
+    await db('notifications').where({ id: gone.notificationId }).update({ removed: true });
+    const warn = vi.spyOn(gone.t.deps.log, 'warn');
+    await processImport(gone.t.deps, gone.payload, ctx);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'r' }), 'process_import failed');
   });
 });

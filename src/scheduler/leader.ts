@@ -4,7 +4,7 @@ import mysql from 'mysql2/promise';
 
 const MAX_LOCK_NAME = 64;
 /** A lock probe that takes longer than this is treated as a dead connection: leadership is lost at once. */
-export const PROBE_TIMEOUT_MS = 5_000;
+const PROBE_TIMEOUT_MS = 5_000;
 
 export interface LeaderOptions {
   probeTimeoutMs?: number;

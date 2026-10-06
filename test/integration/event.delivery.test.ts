@@ -277,3 +277,23 @@ describe('event_delivery rejects an occurredAt that is not a strict, in-range UT
     });
   }
 });
+
+describe('event_delivery logging consistency (§9)', () => {
+  it('an invalid payload is logged at warn with an Error object, field name only', async () => {
+    const deps = makeTestDeps({ db });
+    const warn = vi.spyOn(deps.log, 'warn');
+    await eventDelivery(deps, payload({ occurrenceKey: '' }), ctx);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [fields] = warn.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(fields).toMatchObject({ invalid: 'occurrenceKey', accountId: 1 });
+    expect(fields.err).toBeInstanceOf(Error);
+  });
+
+  it('the done line carries payload.requestId', async () => {
+    const deps = makeTestDeps({ db });
+    await makeNotification(db, 'event', { event_trigger: 'shipped', active: true });
+    const info = vi.spyOn(deps.log, 'info');
+    await eventDelivery(deps, { ...payload(), requestId: 'req-2' }, ctx);
+    expect(info).toHaveBeenCalledWith(expect.objectContaining({ requestId: 'req-2' }), 'event_delivery done');
+  });
+});

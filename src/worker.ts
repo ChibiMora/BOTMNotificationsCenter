@@ -44,7 +44,7 @@ export async function startWorker(deps: Deps, opts: WorkerOptions = {}): Promise
 }
 
 /** How long shutdown may take before the process gives up and exits non-zero. */
-export const STOP_DEADLINE_MS = 30_000;
+const STOP_DEADLINE_MS = 30_000;
 
 /** Runs `stop`, racing it against a deadline; `setTimer` returns a cancel function (tests inject it). */
 export async function stopWithDeadline(

@@ -1,5 +1,5 @@
 // account_recheck (§7.2 "When an account changes", §8.2 row; B8) against the real database and seeded accounts.
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { testDb, resetDb, updateAccount } from '../helpers/db.js';
 import type { Knex } from 'knex';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
@@ -7,6 +7,7 @@ import { makeNotification } from '../helpers/factories.js';
 import { FixedClock } from '../helpers/clock.js';
 import { accountRecheck, recheckAccount } from '../../src/jobs/accountRecheck.js';
 import { fanoutFilter } from '../../src/jobs/fanoutFilter.js';
+import { UnusableFiltersError } from '../../src/eligibility/buildQuery.js';
 
 const db = testDb();
 beforeEach(() => resetDb(db));
@@ -149,5 +150,38 @@ describe('account_recheck reads the writer, never the lagging replica', () => {
       (deps.metrics as RecordingMetrics).calls.filter((c) => c.name === 'account_recheck_unusable_filters'),
     ).toHaveLength(2);
     expect(await db('notification_deliveries').whereIn('notification_id', [bad1.id, bad2.id])).toEqual([]);
+  });
+});
+
+describe('account_recheck consistency with sibling jobs (§8.2, §9)', () => {
+  it('heartbeats after each page, and a lost lease (heartbeat throws) propagates', async () => {
+    const deps = makeTestDeps({ db });
+    await makeNotification(db, 'filter', { active: true, filters: json({ country: ['US'] }) });
+    let beats = 0;
+    await accountRecheck(deps, { accountId: 1 }, { attempt: 1, heartbeat: async () => void beats++ });
+    expect(beats).toBe(1);
+    const lost = {
+      attempt: 1,
+      heartbeat: async () => {
+        throw new Error('lease lost');
+      },
+    };
+    await expect(accountRecheck(deps, { accountId: 2 }, lost)).rejects.toThrow('lease lost');
+  });
+
+  it('a skipped notification with unusable filters is logged at warn with the Error object and requestId', async () => {
+    const deps = makeTestDeps({ db });
+    const bad = await makeNotification(db, 'filter', {
+      active: true,
+      filters: json({ relationshipStatus: ['toString'] }),
+    });
+    const warn = vi.spyOn(deps.log, 'warn');
+    const error = vi.spyOn(deps.log, 'error');
+    await accountRecheck(deps, { accountId: 1, requestId: 'req-3' }, ctx);
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [fields] = warn.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(fields).toMatchObject({ notificationId: bad.id, accountId: 1, requestId: 'req-3' });
+    expect(fields.err).toBeInstanceOf(UnusableFiltersError);
   });
 });
