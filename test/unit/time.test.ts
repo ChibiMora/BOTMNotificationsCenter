@@ -75,3 +75,36 @@ describe('parseRequestTimestamp DST gap at midnight', () => {
     );
   });
 });
+
+describe('parseRequestTimestamp: MySQL DATETIME range in UTC', () => {
+  const rejects = (s: string, tz = 'America/New_York') => {
+    expect(() => parseRequestTimestamp(s, tz)).toThrow(AppError);
+    try {
+      parseRequestTimestamp(s, tz);
+    } catch (e) {
+      expect((e as AppError).code).toBe('VALIDATION_ERROR');
+    }
+  };
+  const ok = (s: string, iso: string, tz = 'America/New_York') =>
+    expect(parseRequestTimestamp(s, tz).toISOString()).toBe(iso);
+
+  it('Z form: both bounds inside, one second outside each rejected', () => {
+    ok('1000-01-01T00:00:00Z', '1000-01-01T00:00:00.000Z');
+    ok('9999-12-31T23:59:59Z', '9999-12-31T23:59:59.000Z');
+    rejects('0999-12-31T23:59:59Z');
+  });
+  it('offset form: judged in UTC', () => {
+    ok('9999-12-31T18:59:59-05:00', '9999-12-31T23:59:59.000Z');
+    rejects('9999-12-31T19:00:00-05:00');
+    rejects('9999-12-31T23:59:59-05:00');
+    ok('1000-01-01T01:00:00+01:00', '1000-01-01T00:00:00.000Z');
+    rejects('1000-01-01T00:59:59+01:00');
+  });
+  it('plain date in the business timezone: judged in UTC', () => {
+    expect(parseRequestTimestamp('9999-12-31', 'America/New_York').getUTCFullYear()).toBe(9999);
+    expect(parseRequestTimestamp('1000-01-02', 'Asia/Tokyo').getUTCFullYear()).toBe(1000);
+    rejects('1000-01-01', 'Asia/Tokyo');
+    ok('1000-01-01', '1000-01-01T00:00:00.000Z', 'UTC');
+    ok('9999-12-31', '9999-12-31T00:00:00.000Z', 'UTC');
+  });
+});
