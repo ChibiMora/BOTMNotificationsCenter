@@ -18,17 +18,36 @@ async function storedIds(data: Buffer): Promise<number[]> {
   return ids;
 }
 
-/** Marks the run (only while still processing) and the import failed. */
-async function failRun(deps: Deps, importId: number, runId: number, error: string, deleteFile: boolean) {
+type FailReason = 'removed' | 'dead' | 'file_missing';
+
+/**
+ * Marks the run (only while still processing) and the import failed. Returns whether this call moved the run from
+ * `processing` to `failed`; only then is `process_import.failed` counted and the ending logged at warn (ids and reason
+ * only).
+ */
+async function failRun(
+  deps: Deps,
+  importId: number,
+  runId: number,
+  reason: FailReason,
+  error: string,
+  deleteFile: boolean,
+): Promise<boolean> {
   const now = truncateToSecond(deps.clock.now());
-  await withTransaction(deps.db, async (trx) => {
-    const changed = await trx('import_runs')
+  const changed = await withTransaction(deps.db, async (trx) => {
+    const n = await trx('import_runs')
       .where({ id: runId, import_id: importId, status: 'processing' })
       .update({ status: 'failed', finished_at: now, error: error.slice(0, 255) });
-    if (changed !== 1) return;
+    if (n !== 1) return false;
     await trx('imports').where({ id: importId }).update({ status: 'failed', updated_at: now });
     if (deleteFile) await trx('import_files').where({ import_id: importId }).delete();
+    return true;
   });
+  if (changed) {
+    deps.metrics.count('process_import.failed', 1, { reason });
+    deps.log.warn({ importId, runId, reason }, 'process_import failed');
+  }
+  return changed;
 }
 
 /** MUST touch `imports.updated_at` after every chunk (housekeeping re-enqueues imports idle for 10 minutes). */
@@ -42,7 +61,7 @@ export const processImport: (
   const imp = await deps.db('imports').where({ id: importId }).first('notification_id');
   const file = await deps.db('import_files').where({ import_id: importId }).first('data');
   if (!imp || !file) {
-    await failRun(deps, importId, runId, 'import file missing', false);
+    await failRun(deps, importId, runId, 'file_missing', 'import file missing', false);
     return;
   }
   const rows = await storedIds(file.data as Buffer);
@@ -58,8 +77,7 @@ export const processImport: (
   for (let i = 0; i < distinct.length; i += deps.config.importChunk) {
     const n = await deps.db('notifications').where({ id: imp.notification_id }).first('removed', 'live_date');
     if (!n || n.removed) {
-      await failRun(deps, importId, runId, 'notification removed', true);
-      deps.metrics.count('process_import.failed', 1, { reason: 'removed' });
+      await failRun(deps, importId, runId, 'removed', 'notification removed', true);
       return;
     }
     const chunk = distinct.slice(i, i + deps.config.importChunk);
@@ -151,8 +169,7 @@ export const onProcessImportDead: (
   error: Error,
 ) => Promise<void> = async (deps, { importId, runId }) => {
   try {
-    await failRun(deps, importId, runId, 'processing failed after the last attempt', false);
-    deps.metrics.count('process_import.failed', 1, { reason: 'dead' });
+    await failRun(deps, importId, runId, 'dead', 'processing failed after the last attempt', false);
   } catch (err) {
     deps.log.error({ err, importId, runId }, 'process_import dead-letter update failed');
   }

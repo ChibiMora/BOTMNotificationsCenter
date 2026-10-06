@@ -180,6 +180,37 @@ describe('POST /admin/notifications/imports', () => {
     expect(c.csvMaxRows).toBe(1000000);
   });
 
+  it('at the default 10 MiB cap: 10 MiB + 1 byte is 400 with nothing persisted; a 1 MiB valid file is 202', async () => {
+    const config = loadConfig({
+      ASSET_BASE_URL: 'https://assets.example.com',
+      SITE_BASE_URL: 'https://www.example.com',
+      DATABASE_URL: 'mysql://root:root@127.0.0.1:3306/notification_center',
+      ...process.env,
+      STANDINS: 'true',
+      CSV_MAX_BYTES: undefined,
+      CSV_MAX_ROWS: undefined,
+    });
+    expect(config.csvMaxBytes).toBe(10485760);
+    const t = testApp({ db, config });
+    const head = 'accountID\n1\n';
+    const over = Buffer.alloc(10485761, '\n');
+    over.write(head);
+    expect(over.length).toBe(10485761);
+    const res = await post(t, { ...valid(), file: over });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('VALIDATION_ERROR');
+    expect(await counts()).toEqual(empty);
+    expect((t.deps.queue as FakeQueue).enqueued).toHaveLength(0);
+
+    const rows = 524283; // 'accountID\n' + rows * '1\n' = 1 MiB
+    const mib = 'accountID\n' + '1\n'.repeat(rows);
+    expect(Buffer.byteLength(mib)).toBe(1048576);
+    const ok = await post(t, { ...valid(), file: mib });
+    expect(ok.status).toBe(202);
+    expect((await db('imports').where({ id: ok.body.id }).first('total_rows')).total_rows).toBe(rows);
+    expect((t.deps.queue as FakeQueue).enqueued).toHaveLength(1);
+  });
+
   it('400, nothing persisted, for a liveDate beyond the DATETIME range in UTC', async () => {
     const t = testApp({ db });
     const res = await post(t, {

@@ -301,17 +301,81 @@ describe('process_import', () => {
       expect(counted(t)).toHaveLength(3);
     });
 
-    it('removed notification counts process_import.failed reason=removed', async () => {
+    const warned = (t: { deps: { log: unknown } }) => {
+      const warn = vi.spyOn((t.deps as { log: { warn: (...a: unknown[]) => void } }).log, 'warn');
+      return () =>
+        warn.mock.calls.filter((c) => typeof c[1] === 'string' && c[1].startsWith('process_import'));
+    };
+    const runStatus = async (runId: number) =>
+      (await db('import_runs').where({ id: runId }).first('status')).status as string;
+
+    it('removed notification counts process_import.failed reason=removed once and logs once at warn', async () => {
       const { t, payload, notificationId } = await upload(file);
+      const warns = warned(t);
       await db('notifications').where({ id: notificationId }).update({ removed: true });
       await processImport(t.deps, payload, ctx);
       expect(counted(t)).toEqual([{ name: 'process_import.failed', value: 1, dims: { reason: 'removed' } }]);
+      expect(warns()).toHaveLength(1);
+      expect(warns()[0]![0]).toEqual({ importId: payload.importId, runId: payload.runId, reason: 'removed' });
     });
 
-    it('dead-letter counts process_import.failed reason=dead', async () => {
+    it('removed while a concurrent copy already finished the run: no failed metric, no warn', async () => {
+      const { t, payload, notificationId } = await upload(file);
+      const warns = warned(t);
+      // After the first chunk, the notification is removed and a concurrent copy finishes the run.
+      const concurrent = {
+        heartbeat: async () => {
+          await db('notifications').where({ id: notificationId }).update({ removed: true });
+          await db('import_runs').where({ id: payload.runId }).update({ status: 'completed' });
+        },
+      } as never;
+      await processImport(t.deps, payload, concurrent);
+      expect(await runStatus(payload.runId)).toBe('completed');
+      expect(counted(t)).toEqual([]);
+      expect(warns()).toHaveLength(0);
+    });
+
+    it('import file missing: run failed, counts failed reason=file_missing once, logs once at warn', async () => {
       const { t, payload } = await upload(file);
+      const warns = warned(t);
+      await db('import_files').where({ import_id: payload.importId }).delete();
+      await processImport(t.deps, payload, ctx);
+      expect(await runStatus(payload.runId)).toBe('failed');
+      expect((await db('imports').where({ id: payload.importId }).first('status')).status).toBe('failed');
+      expect(counted(t)).toEqual([
+        { name: 'process_import.failed', value: 1, dims: { reason: 'file_missing' } },
+      ]);
+      expect(warns()).toHaveLength(1);
+      expect(warns()[0]![0]).toEqual({
+        importId: payload.importId,
+        runId: payload.runId,
+        reason: 'file_missing',
+      });
+    });
+
+    it('dead-letter on a processing run counts failed reason=dead exactly once and logs once at warn', async () => {
+      const { t, payload } = await upload(file);
+      const warns = warned(t);
       await onProcessImportDead(t.deps, payload, new Error('boom'));
+      expect(await runStatus(payload.runId)).toBe('failed');
       expect(counted(t)).toEqual([{ name: 'process_import.failed', value: 1, dims: { reason: 'dead' } }]);
+      expect(warns()).toHaveLength(1);
+      expect(warns()[0]![0]).toEqual({ importId: payload.importId, runId: payload.runId, reason: 'dead' });
+      await onProcessImportDead(t.deps, payload, new Error('boom'));
+      expect(counted(t)).toHaveLength(1);
+      expect(warns()).toHaveLength(1);
+    });
+
+    it('dead-letter on a completed run: run stays completed, no failed metric, no warn', async () => {
+      const { t, payload } = await upload(file);
+      await processImport(t.deps, payload, ctx);
+      const before = counted(t).length;
+      const warns = warned(t);
+      await onProcessImportDead(t.deps, payload, new Error('boom'));
+      expect(await runStatus(payload.runId)).toBe('completed');
+      expect((await db('imports').where({ id: payload.importId }).first('status')).status).toBe('completed');
+      expect(counted(t).slice(before)).toEqual([]);
+      expect(warns()).toHaveLength(0);
     });
   });
 });
