@@ -5,6 +5,12 @@ import { cronSchedule, intervalSchedule, anyOf, MONTH_START } from '../../src/sc
 const at = (s: string) => new Date(s);
 
 describe('schedule', () => {
+  it('day-of-week 7 is Sunday (standard cron), alone and in ranges; 8 is invalid', () => {
+    expect(cronSchedule('0 6 * * 7').isDue(at('2026-10-04T06:00:00Z'), undefined)).toBe(true); // Sunday
+    expect(cronSchedule('0 6 * * 7').isDue(at('2026-10-05T06:00:00Z'), undefined)).toBe(false); // Monday
+    expect(cronSchedule('0 6 * * 5-7').isDue(at('2026-10-04T06:00:00Z'), undefined)).toBe(true);
+    expect(() => cronSchedule('0 6 * * 8')).toThrow(/invalid cron/);
+  });
   it('rescan default 0 6 * * * fires at 06:00 UTC only', () => {
     const s = cronSchedule('0 6 * * *');
     expect(s.isDue(at('2026-10-04T06:00:30Z'), undefined)).toBe(true);

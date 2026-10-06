@@ -10,18 +10,23 @@ import { createLogger } from './lib/logger.js';
 import { emfMetrics } from './lib/metrics.js';
 import { createQueue } from './queue/index.js';
 import { jobHandlers, onDead } from './jobs/index.js';
-import { startScheduler, timers } from './scheduler/index.js';
+import { startScheduler, timers, type Timer } from './scheduler/index.js';
+import type { JobHandlers } from './queue/queue.js';
 
 export interface WorkerOptions {
   /** Start the timer registry (default true). */
   scheduler?: boolean;
+  /** Handler map to consume with (default: the real registry jobHandlers(deps)). */
+  handlers?: JobHandlers;
+  /** Timer list to schedule (default: the real registry timers(deps)). */
+  timers?: Timer[];
 }
 
 /** Starts consuming and (optionally) the scheduler; stop() ends both, waiting for in-progress work. */
 export async function startWorker(deps: Deps, opts: WorkerOptions = {}): Promise<{ stop(): Promise<void> }> {
   // Build (and so validate) the timers first: an invalid cron rejects before any consumer or leader connection.
-  const list = opts.scheduler === false ? undefined : timers(deps);
-  const consumer = await deps.queue.consume(jobHandlers(deps), { onDead: onDead(deps) });
+  const list = opts.scheduler === false ? undefined : (opts.timers ?? timers(deps));
+  const consumer = await deps.queue.consume(opts.handlers ?? jobHandlers(deps), { onDead: onDead(deps) });
   const scheduler = list && startScheduler(deps, list);
   return {
     stop: async () => {
