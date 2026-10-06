@@ -40,9 +40,12 @@ async function withLockWait(schema: string, table: string, id: number, check: ()
     }
     await check();
   } finally {
-    await holder.rollback();
-    await blocked;
-    await waiter?.rollback();
+    try {
+      await holder.rollback();
+    } finally {
+      await blocked;
+      await waiter?.rollback();
+    }
   }
 }
 
