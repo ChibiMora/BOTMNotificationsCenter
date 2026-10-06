@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import type { Knex } from 'knex';
 import { testDb, testConfig, resetDb } from '../helpers/db.js';
+import { recordLocks } from '../helpers/locks.js';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { makeNotification, makeDelivery } from '../helpers/factories.js';
 import { FixedClock } from '../helpers/clock.js';
@@ -92,13 +93,7 @@ function recordLog(d: Deps) {
 const runComplete = (calls: LogCall[]) => calls.filter((c) => c.msg === 'expiry run complete');
 const stopped = (d: Deps) =>
   (d.metrics as RecordingMetrics).calls.filter((c) => c.name === 'expiry_run_stopped').map((c) => c.dims);
-const deliveryRecordLocks = async () => {
-  const [rows] = await db.raw(
-    `SELECT COUNT(*) AS n FROM performance_schema.data_locks
-     WHERE OBJECT_SCHEMA = DATABASE() AND OBJECT_NAME = 'notification_deliveries' AND LOCK_TYPE = 'RECORD'`,
-  );
-  return Number(rows[0].n);
-};
+const deliveryRecordLocks = async () => (await recordLocks(db, 'notification_deliveries')).length;
 const HEX_COLUMNS = `id, HEX(public_id) AS public_id, notification_id, account_id, is_clicked,
   CAST(sent_at AS CHAR) AS sent_at, CAST(due_at AS CHAR) AS due_at, HEX(occurrence_key) AS occurrence_key,
   HEX(dedupe_key) AS dedupe_key, CAST(created_at AS CHAR) AS created_at`;

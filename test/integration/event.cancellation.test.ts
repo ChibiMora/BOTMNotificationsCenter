@@ -1,6 +1,7 @@
 // Cancellation of scheduled sends (§7.4; B5, B6): due-send deletes cancelled rows, cancel_scheduled cleans up early.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { testDb, resetDb } from '../helpers/db.js';
+import { lockWaits, ownLocks } from '../helpers/locks.js';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { makeNotification, makeDelivery } from '../helpers/factories.js';
 import { dueSendTimer } from '../../src/scheduler/dueSend.js';
@@ -129,14 +130,6 @@ describe('cancel_scheduled deletes through the cancellation rule', () => {
   });
 });
 
-const lockWaits = async () =>
-  Number(
-    (
-      (await db.raw('SELECT COUNT(*) AS c FROM performance_schema.data_lock_waits'))[0] as Array<{
-        c: number;
-      }>
-    )[0]!.c,
-  );
 const idOf = (row: unknown) => (typeof row === 'object' ? (row as { id: number }).id : (row as number));
 
 describe('cancel_scheduled never waits while holding the notification lock', () => {
@@ -150,7 +143,7 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
       await holder('notification_deliveries').where({ id: held }).forUpdate().select('id');
       // Completes while the holder still holds its row: the job never waited on it.
       expect(await cancelScheduledRun(makeTestDeps({ db }), n.id, ctx)).toBe(2);
-      expect(await lockWaits()).toBe(0);
+      expect(await lockWaits(db)).toBe(0);
       expect(await ids()).toEqual([held]);
       expect([a, c]).not.toContain(held);
       const admin = await db.transaction();
@@ -191,7 +184,7 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
         db.off('query', watch);
       }
       expect(statements).toBeLessThanOrEqual(CAP);
-      expect(await lockWaits()).toBe(0);
+      expect(await lockWaits(db)).toBe(0);
     } finally {
       db.off('query', counter);
       await holder.rollback();
@@ -200,17 +193,7 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
   });
 });
 
-const deliveryLocks = async () =>
-  Number(
-    (
-      (
-        await db.raw(
-          `SELECT COUNT(*) AS c FROM performance_schema.data_locks
-           WHERE OBJECT_SCHEMA = DATABASE() AND OBJECT_NAME = 'notification_deliveries'`,
-        )
-      )[0] as Array<{ c: number }>
-    )[0]!.c,
-  );
+const deliveryLocks = async () => (await ownLocks(db, 'notification_deliveries')).length;
 
 describe('cancel_scheduled gives up instead of waiting on the notification row', () => {
   it('notification row held FOR UPDATE elsewhere: the run returns at once with 0, no waits, no locks, counted; after commit it deletes', async () => {
@@ -228,7 +211,7 @@ describe('cancel_scheduled gives up instead of waiting on the notification row',
     try {
       await admin.raw('SELECT id FROM notifications WHERE id = ? FOR UPDATE', [n.id]);
       expect(await Promise.race([cancelScheduledRun(deps, n.id, ctx), deleteIssued])).toBe(0);
-      expect(await lockWaits()).toBe(0);
+      expect(await lockWaits(db)).toBe(0);
       expect(await deliveryLocks()).toBe(0);
       expect(
         (deps.metrics as RecordingMetrics).calls.filter((c) => c.name === 'cancel_scheduled_contended'),
@@ -272,7 +255,7 @@ describe('cancel_scheduled pages by id', () => {
       const deleted = await Promise.race([cancelScheduledRun(makeTestDeps({ db }), n.id, ctx, 2), capped]);
       expect(deleted).toBe(free.length);
       expect([...visited].sort((x, y) => x - y)).toEqual(all);
-      expect(await lockWaits()).toBe(0);
+      expect(await lockWaits(db)).toBe(0);
     } finally {
       db.off('query', watch);
       db.off('query-response', record);
