@@ -10,6 +10,7 @@ import { systemClock } from './lib/clock.js';
 import type { Deps } from './lib/deps.js';
 import type { AuthProvider } from './middleware/auth.js';
 import type { Queue } from './queue/queue.js';
+import { createQueue, type DbQueueParts } from './queue/index.js';
 import { HeaderAuthProvider } from './middleware/headerAuth.js';
 import { createApp } from './app.js';
 
@@ -24,20 +25,24 @@ export function selectAuth(config: Config): AuthProvider {
   throw new Error(`AUTH_IMPL=${config.authImpl} is not a known auth provider (only "header" exists)`);
 }
 
-/** QUEUE_IMPL → queue. Wired by the orchestrator once the queue unit merges. */
-export function selectQueue(config: Config): Queue {
-  throw new Error(`queue implementation not wired (QUEUE_IMPL=${config.queueImpl})`);
+/**
+ * QUEUE_IMPL → queue, built with the same parts as the worker. The API only enqueues: it never calls consume(),
+ * so no poll loop or upkeep runs in this process. Unknown impls and the stand-in in production throw.
+ */
+export function selectQueue(config: Config, parts: DbQueueParts): Queue {
+  return createQueue(config, parts);
 }
 
 export async function main(env: Record<string, string | undefined> = process.env): Promise<Server> {
   const config = loadConfig(env);
   const log = createLogger(config.logLevel, { service: 'api' });
   const auth = selectAuth(config);
-  const queue = selectQueue(config);
   const db = createWriterDb(config);
   const dbReader = createReaderDb(config);
   const clock = systemClock;
-  const deps: Deps = { db, dbReader, config, clock, auth, queue, log, metrics: emfMetrics(log, clock) };
+  const metrics = emfMetrics(log, clock);
+  const queue = selectQueue(config, { db, clock, log, metrics });
+  const deps: Deps = { db, dbReader, config, clock, auth, queue, log, metrics };
   const server = createApp(deps).listen(config.port, () => log.info({ port: config.port }, 'api listening'));
   const shutdown = (signal: string) => {
     log.info({ signal }, 'api shutting down');
