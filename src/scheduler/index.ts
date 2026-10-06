@@ -48,6 +48,7 @@ export function createScheduler(deps: Deps, list: Timer[], opts: LeaderGate) {
   const runTimer = async (t: Timer, now: Date) => {
     lastStarted.set(t.name, now);
     if (inFlight.has(t.name)) {
+      deps.metrics.count('scheduled_run', 1, { name: t.name, status: 'skipped' });
       await record(t.name, { last_status: 'skipped' });
       return;
     }
@@ -64,6 +65,7 @@ export function createScheduler(deps: Deps, list: Timer[], opts: LeaderGate) {
     } finally {
       inFlight.delete(t.name);
     }
+    deps.metrics.count('scheduled_run', 1, { name: t.name, status });
     await record(t.name, { last_completed_at: deps.clock.now(), last_status: status }).catch((e) =>
       bookkeepingFailed(t, e),
     );

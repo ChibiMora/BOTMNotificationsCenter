@@ -1,4 +1,6 @@
-import { fileURLToPath } from 'node:url';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import knexLib, { type Knex } from 'knex';
 import type { Config } from '../config/index.js';
 const SESSION_SQL =
@@ -47,7 +49,26 @@ export function createDb(url: string, opts: { pool?: Knex.PoolConfig } = {}): Kn
 export const createWriterDb = (c: Config) => createDb(c.databaseUrl);
 export const createReaderDb = (c: Config) => createDb(c.databaseReaderUrl);
 export const withTransaction = <T>(db: Knex, fn: (trx: Knex.Transaction) => Promise<T>) => db.transaction(fn);
-export const MIGRATIONS = {
-  directory: fileURLToPath(new URL('../../migrations', import.meta.url)),
-  loadExtensions: ['.ts', '.js'],
+/** knex migration source whose names are extension-less (`20261001000100_initial`), so a database migrated from the
+ *  `.ts` sources (dev/test) and one migrated from the built `dist/migrations/*.js` (image) record the same names and
+ *  each accepts the other. Loads whichever of `.ts`/`.js` exists per name (`.js` preferred), sorted by name; ignores
+ *  `.d.ts`, `.map` and anything else. */
+export function migrationSource(directory: string): Knex.MigrationSource<{ name: string; file: string }> {
+  return {
+    async getMigrations() {
+      const byName = new Map<string, string>();
+      for (const file of await readdir(directory)) {
+        if (file.endsWith('.d.ts')) continue;
+        const m = /^(.+)\.(ts|js)$/.exec(file);
+        if (!m) continue;
+        if (!byName.has(m[1]!) || m[2] === 'js') byName.set(m[1]!, file);
+      }
+      return [...byName.keys()].sort().map((name) => ({ name, file: byName.get(name)! }));
+    },
+    getMigrationName: (m) => m.name,
+    getMigration: (m) => import(pathToFileURL(join(directory, m.file)).href),
+  };
+}
+export const MIGRATIONS: Knex.MigratorConfig = {
+  migrationSource: migrationSource(fileURLToPath(new URL('../../migrations', import.meta.url))),
 };

@@ -57,8 +57,14 @@ describe('account_recheck', () => {
     expect(got).toHaveLength(1);
     expect(got[0]).toMatchObject({ notification_id: n.id, dedupe_key: '2026-10' });
     expect(new Date(got[0].sent_at).getTime()).toBe(deps.clock.now().getTime());
+    const written = () =>
+      (deps.metrics as RecordingMetrics).calls
+        .filter((c) => c.name === 'account_recheck.deliveries_written')
+        .map((c) => c.value);
+    expect(written()).toEqual([1]);
     await accountRecheck(deps, { accountId: 1 }, ctx);
     expect(await forAccount(1)).toHaveLength(1);
+    expect(written()).toEqual([1, 0]); // the job emits the count even when it inserts nothing
   });
 
   it('considers every active filter notification, skipping non-matching, inactive, removed and non-filter ones', async () => {

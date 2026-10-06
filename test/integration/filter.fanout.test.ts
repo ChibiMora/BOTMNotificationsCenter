@@ -68,6 +68,15 @@ describe('fanout_filter', () => {
       expect(new Date(r.due_at).getTime()).toBe(t);
     }
     expect(metrics.calls.some((c) => c.kind === 'count' && c.value === expected.length)).toBe(true);
+    expect(metrics.calls.filter((c) => c.name === 'fanout_filter.deliveries_written')).toEqual([
+      { kind: 'count', name: 'fanout_filter.deliveries_written', value: expected.length, dims: undefined },
+    ]);
+    // A second run inserts nothing: the job still emits the count, with value 0.
+    metrics.calls.length = 0;
+    await fanoutFilter(deps, { notificationId: n.id }, ctx());
+    expect(
+      metrics.calls.filter((c) => c.name === 'fanout_filter.deliveries_written').map((c) => c.value),
+    ).toEqual([0]);
   });
 
   it('{} filters delivers to all 72 accounts', async () => {

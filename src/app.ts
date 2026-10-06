@@ -30,6 +30,7 @@ function health(deps: Deps): Koa.Middleware {
         await deps.db.raw('select 1');
       } catch (err) {
         ctx.state.log?.warn({ err }, 'readiness ping failed');
+        deps.metrics.count('readiness_failed', 1, { process: 'api' });
         throw new AppError('UNAVAILABLE', 503, 'database unavailable');
       }
       ctx.body = { status: 'ok' };

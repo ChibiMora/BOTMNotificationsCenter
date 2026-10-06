@@ -106,18 +106,26 @@ export function serveHealth(
 }
 
 /** /healthz: process alive. /readyz: ready and the writer answers a ping. */
-export function healthHandler(db: Pick<Deps['db'], 'raw'>, isReady: () => boolean): http.RequestListener {
+export function healthHandler(
+  db: Pick<Deps['db'], 'raw'>,
+  isReady: () => boolean,
+  metrics?: Pick<Deps['metrics'], 'count'>,
+): http.RequestListener {
   return async (req, res) => {
     if (req.url === '/healthz') {
       res.writeHead(200).end('ok');
       return;
     }
     if (req.url === '/readyz') {
+      // Not ready while shutting down gracefully is expected (every deploy): only a failed ping is counted.
       const ok =
         isReady() &&
         (await db.raw('SELECT 1').then(
           () => true,
-          () => false,
+          () => {
+            metrics?.count('readiness_failed', 1, { process: 'worker' });
+            return false;
+          },
         ));
       res.writeHead(ok ? 200 : 503).end(ok ? 'ready' : 'not ready');
       return;
@@ -138,7 +146,7 @@ async function main() {
   const deps: Deps = { db, dbReader, config, clock, auth, queue, log, metrics };
   const worker = await startWorker(deps);
   let ready = true;
-  const server = http.createServer(healthHandler(db, () => ready));
+  const server = http.createServer(healthHandler(db, () => ready, metrics));
   const stopAll = shutdownOnce(
     async () => {
       ready = false;

@@ -70,6 +70,73 @@ export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): 
 
   const purgeable = queue as Partial<{ purgeDead(): Promise<number> }>;
   if (typeof purgeable.purgeDead === 'function') await purgeable.purgeDead();
+
+  // A metrics failure is logged, never fails the housekeeping run.
+  await deliveriesPerAccountDay(deps).catch((e) =>
+    deps.log.error({ err: e }, 'deliveries per account metric failed'),
+  );
+}
+
+/** Ids by which a delivery created today may precede an earlier-created one: concurrent writers allocate ids and
+ *  stamp created_at in different orders (a long fan-out insert that read the clock before midnight commits ids above
+ *  rows stamped after it). 100k ids covers far more than any single open insert batch, and costs at most 100k extra
+ *  primary-key rows in the scan; `created_at >= dayStart` inside the range keeps the count exact. */
+export const DAY_START_ID_MARGIN = 100_000;
+/** Time budget (MySQL MAX_EXECUTION_TIME hint) for the aggregate query; over it the gauges are skipped this run. */
+export const DELIVERIES_PER_ACCOUNT_DAY_BUDGET_MS = 5000;
+const ER_QUERY_TIMEOUT = 3024;
+
+/**
+ * §11.4 abuse signal: deliveries created today (UTC, from the injected clock) per account — max and p99 (nearest rank).
+ * Runs on the READER. notification_deliveries has no created_at index and no migration is added, so the first id
+ * created today is approximated by a binary search over the primary key (~log2(rows) point lookups), started
+ * DAY_START_ID_MARGIN ids earlier, and only that id range is scanned with `created_at >= dayStart`. Both numbers are
+ * computed in SQL (per-account counts in a derived table, ranked with a window function) so one row comes back.
+ * Over the time budget (ER_QUERY_TIMEOUT) the gauges are not emitted this run: warn + deliveries_per_account_day_skipped.
+ */
+export async function deliveriesPerAccountDay(
+  deps: Pick<Deps, 'dbReader' | 'clock' | 'metrics' | 'log'>,
+): Promise<void> {
+  const { dbReader: db, clock, metrics, log } = deps;
+  const now = clock.now();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const [bounds] = await db('notification_deliveries').min({ lo: 'id' }).max({ hi: 'id' });
+  let max = 0;
+  let p99 = 0;
+  if (bounds?.lo != null) {
+    let lo = Number(bounds.lo);
+    let hi = Number(bounds.hi) + 1;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const r = await db('notification_deliveries')
+        .select('id', 'created_at')
+        .where('id', '>=', mid)
+        .orderBy('id')
+        .first();
+      if (!r || new Date(r.created_at).getTime() >= dayStart.getTime()) hi = mid;
+      else lo = Number(r.id) + 1;
+    }
+    let rows: Array<{ max_n: unknown; p99_n: unknown }> | undefined;
+    try {
+      [rows] = await db.raw(
+        `SELECT /*+ MAX_EXECUTION_TIME(${DELIVERIES_PER_ACCOUNT_DAY_BUDGET_MS}) */
+           COALESCE(MAX(n), 0) AS max_n, COALESCE(MAX(CASE WHEN rn = CEIL(0.99 * total) THEN n END), 0) AS p99_n
+         FROM (SELECT n, ROW_NUMBER() OVER (ORDER BY n) AS rn, COUNT(*) OVER () AS total
+               FROM (SELECT account_id, COUNT(*) AS n FROM notification_deliveries
+                     WHERE id >= ? AND created_at >= ? GROUP BY account_id) AS per_account) AS ranked`,
+        [Math.max(0, lo - DAY_START_ID_MARGIN), dayStart],
+      );
+    } catch (e) {
+      if ((e as { errno?: unknown }).errno !== ER_QUERY_TIMEOUT) throw e;
+      log.warn({ err: e }, 'deliveries per account metric over its time budget; gauges skipped this run');
+      metrics.count('deliveries_per_account_day_skipped');
+      return;
+    }
+    max = Number(rows?.[0]?.max_n ?? 0);
+    p99 = Number(rows?.[0]?.p99_n ?? 0);
+  }
+  metrics.gauge('deliveries_per_account_day_max', max);
+  metrics.gauge('deliveries_per_account_day_p99', p99);
 }
 
 export const housekeepingTimer = (deps: Deps): Timer => ({

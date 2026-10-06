@@ -7,7 +7,7 @@ jobs:
       mysql:
         image: mysql:8
         env: { MYSQL_ROOT_PASSWORD: root }
-        ports: ["3306:3306"]
+        ports: ['3306:3306']
         options: --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot" --health-interval=5s --health-retries=30
     env:
       DATABASE_URL: mysql://root:root@127.0.0.1:3306/notification_center
@@ -21,4 +21,29 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      # Fail fast: lint and build run before the database suite. Test setup sets STANDINS=true itself and creates
+      # DB_NAME on the service container, exactly as locally.
       - run: npm test
+  image:
+    # "The image builds" is checked on every push; nothing is pushed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t notification-center:ci .
+      - name: image refuses to start without configuration
+        # Non-zero exit within 30 s AND the output names the missing setting (a broken dist layout fails this).
+        run: |
+          set +e
+          out=$(timeout 30 docker run --rm notification-center:ci 2>&1); code=$?
+          set -e
+          echo "$out"
+          test "$code" -ne 0 && test "$code" -ne 124
+          echo "$out" | grep -q 'DATABASE_URL'
+      - name: release-step script is present and prints its usage
+        run: |
+          set +e
+          out=$(timeout 30 docker run --rm notification-center:ci node dist/scripts/db.js 2>&1); code=$?
+          set -e
+          echo "$out"
+          test "$code" -eq 2
+          echo "$out" | grep -q 'usage: db create|migrate|drop <name>'
