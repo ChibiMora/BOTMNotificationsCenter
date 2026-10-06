@@ -1,7 +1,7 @@
 // Cancellation of scheduled sends (§7.4; B5, B6): due-send deletes cancelled rows, cancel_scheduled cleans up early.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { testDb, resetDb } from '../helpers/db.js';
-import { makeTestDeps } from '../helpers/deps.js';
+import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { makeNotification, makeDelivery } from '../helpers/factories.js';
 import { dueSendTimer } from '../../src/scheduler/dueSend.js';
 import { cancelScheduled, cancelScheduledRun } from '../../src/jobs/cancelScheduled.js';
@@ -197,5 +197,87 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
       await holder.rollback();
     }
     expect(await ids()).toEqual(rows);
+  });
+});
+
+const deliveryLocks = async () =>
+  Number(
+    (
+      (
+        await db.raw(
+          `SELECT COUNT(*) AS c FROM performance_schema.data_locks
+           WHERE OBJECT_SCHEMA = DATABASE() AND OBJECT_NAME = 'notification_deliveries'`,
+        )
+      )[0] as Array<{ c: number }>
+    )[0]!.c,
+  );
+
+describe('cancel_scheduled gives up instead of waiting on the notification row', () => {
+  it('notification row held FOR UPDATE elsewhere: the run returns at once with 0, no waits, no locks, counted; after commit it deletes', async () => {
+    const n = await makeNotification(db, 'event', { event_trigger: 'shipped', active: false });
+    const rows = [idOf(await sched(n.id, 1, before)), idOf(await sched(n.id, 2, before))];
+    const deps = makeTestDeps({ db });
+    const admin = await db.transaction();
+    let failDelete!: () => void;
+    const deleteIssued = new Promise<never>((_, reject) => {
+      failDelete = () => reject(new Error('cancel_scheduled issued its DELETE behind the admin lock'));
+    });
+    deleteIssued.catch(() => undefined);
+    const watch = (q: { sql: string }) => void (/^\s*delete/i.test(q.sql) && failDelete());
+    db.on('query', watch);
+    try {
+      await admin.raw('SELECT id FROM notifications WHERE id = ? FOR UPDATE', [n.id]);
+      expect(await Promise.race([cancelScheduledRun(deps, n.id, ctx), deleteIssued])).toBe(0);
+      expect(await lockWaits()).toBe(0);
+      expect(await deliveryLocks()).toBe(0);
+      expect(
+        (deps.metrics as RecordingMetrics).calls.filter((c) => c.name === 'cancel_scheduled_contended'),
+      ).toHaveLength(1);
+      expect(await ids()).toEqual(rows);
+    } finally {
+      db.off('query', watch);
+      await admin.commit();
+    }
+    expect(await cancelScheduledRun(makeTestDeps({ db }), n.id, ctx)).toBe(2);
+    expect(await ids()).toEqual([]);
+  });
+});
+
+describe('cancel_scheduled pages by id', () => {
+  it('every other row locked elsewhere: one run visits each candidate once, deletes exactly the unlocked ones, ends', async () => {
+    const n = await makeNotification(db, 'event', { event_trigger: 'shipped', active: false });
+    const all: number[] = [];
+    for (let a = 1; a <= 7; a++) all.push(idOf(await sched(n.id, a, before)));
+    const lockedRows = all.filter((_, i) => i % 2 === 1);
+    const free = all.filter((_, i) => i % 2 === 0);
+    const visited: number[] = [];
+    let statements = 0;
+    const CAP = 30;
+    let overCap!: () => void;
+    const capped = new Promise<never>((_, reject) => {
+      overCap = () => reject(new Error(`cancel_scheduled issued more than ${CAP} statements`));
+    });
+    capped.catch(() => undefined);
+    const watch = () => void (++statements > CAP && overCap());
+    const record = (response: unknown, q: { sql: string }) => {
+      if (/^\s*select/i.test(q.sql) && /notification_deliveries/.test(q.sql) && !/\bfor\b/i.test(q.sql)) {
+        for (const r of response as unknown[]) visited.push(idOf(r));
+      }
+    };
+    const holder = await db.transaction();
+    try {
+      await holder('notification_deliveries').whereIn('id', lockedRows).forUpdate().select('id');
+      db.on('query', watch);
+      db.on('query-response', record);
+      const deleted = await Promise.race([cancelScheduledRun(makeTestDeps({ db }), n.id, ctx, 2), capped]);
+      expect(deleted).toBe(free.length);
+      expect([...visited].sort((x, y) => x - y)).toEqual(all);
+      expect(await lockWaits()).toBe(0);
+    } finally {
+      db.off('query', watch);
+      db.off('query-response', record);
+      await holder.rollback();
+    }
+    expect(await ids()).toEqual(lockedRows);
   });
 });
