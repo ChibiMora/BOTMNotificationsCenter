@@ -169,6 +169,7 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
     const counter = () => void statements++;
     db.on('query', counter);
     const holder = await db.transaction();
+    let run: Promise<unknown> | undefined;
     try {
       await holder('notification_deliveries').whereIn('id', rows).forUpdate().select('id');
       statements = 0;
@@ -179,7 +180,8 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
       const watch = () => void (statements > CAP && overCap());
       db.on('query', watch);
       try {
-        expect(await Promise.race([cancelScheduledRun(makeTestDeps({ db }), n.id, ctx, 2), capped])).toBe(0);
+        run = cancelScheduledRun(makeTestDeps({ db }), n.id, ctx, 2);
+        expect(await Promise.race([run, capped])).toBe(0);
       } finally {
         db.off('query', watch);
       }
@@ -188,6 +190,7 @@ describe('cancel_scheduled never waits while holding the notification lock', () 
     } finally {
       db.off('query', counter);
       await holder.rollback();
+      await run?.catch(() => undefined); // a run that lost the race must settle before the next test
     }
     expect(await ids()).toEqual(rows);
   });
@@ -208,9 +211,11 @@ describe('cancel_scheduled gives up instead of waiting on the notification row',
     deleteIssued.catch(() => undefined);
     const watch = (q: { sql: string }) => void (/^\s*delete/i.test(q.sql) && failDelete());
     db.on('query', watch);
+    let run: Promise<unknown> | undefined;
     try {
       await admin.raw('SELECT id FROM notifications WHERE id = ? FOR UPDATE', [n.id]);
-      expect(await Promise.race([cancelScheduledRun(deps, n.id, ctx), deleteIssued])).toBe(0);
+      run = cancelScheduledRun(deps, n.id, ctx);
+      expect(await Promise.race([run, deleteIssued])).toBe(0);
       expect(await lockWaits(db)).toBe(0);
       expect(await deliveryLocks()).toBe(0);
       expect(
@@ -220,6 +225,7 @@ describe('cancel_scheduled gives up instead of waiting on the notification row',
     } finally {
       db.off('query', watch);
       await admin.commit();
+      await run?.catch(() => undefined); // a run that lost the race must settle before the next test
     }
     expect(await cancelScheduledRun(makeTestDeps({ db }), n.id, ctx)).toBe(2);
     expect(await ids()).toEqual([]);

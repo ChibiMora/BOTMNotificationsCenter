@@ -82,11 +82,15 @@ describe('due-send', () => {
     const b = depsWith(5);
     await seed(23);
     const trx = await db.transaction();
-    const heldByA = await dueSendPass(a, trx); // A's batch transaction is held open
-    expect(heldByA).toBe(5);
-    await dueSendTimer(b).run(b); // B skips A's locked rows and releases the rest
-    expect(await pending()).toBe(5);
-    await trx.commit();
+    try {
+      const heldByA = await dueSendPass(a, trx); // A's batch transaction is held open
+      expect(heldByA).toBe(5);
+      await dueSendTimer(b).run(b); // B skips A's locked rows and releases the rest
+      expect(await pending()).toBe(5);
+      await trx.commit();
+    } finally {
+      if (!trx.isCompleted()) await trx.rollback();
+    }
     expect(await pending()).toBe(0);
     const total = (d: typeof a) =>
       (d.metrics as RecordingMetrics).calls
