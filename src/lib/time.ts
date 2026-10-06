@@ -32,6 +32,16 @@ function tzOffsetMs(t: Date, tz: string): number {
   return Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour!, +p.minute!, +p.second!) - t.getTime();
 }
 /** Parse a request timestamp (§3.1): date-time with Z/offset, or a plain date = midnight in `tz`. Throws 400 otherwise. */
+/** MySQL DATETIME range; instants are stored in UTC, so the range is checked in UTC for every accepted form. */
+const MIN_STORABLE_MS = Date.UTC(1000, 0, 1, 0, 0, 0);
+const MAX_STORABLE_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
+
+function storable(t: Date, s: string): Date {
+  const ms = t.getTime();
+  if (ms < MIN_STORABLE_MS || ms > MAX_STORABLE_MS) throw validationError(`timestamp out of range: ${s}`);
+  return t;
+}
+
 export function parseRequestTimestamp(s: string, tz: string): Date {
   let m = DATE_RE.exec(s);
   if (m) {
@@ -44,12 +54,12 @@ export function parseRequestTimestamp(s: string, tz: string): Date {
     const before = wall - tzOffsetMs(new Date(wall - 86_400_000), tz);
     const after = wall - tzOffsetMs(new Date(wall + 86_400_000), tz);
     const valid = [before, after].filter((c) => c + tzOffsetMs(new Date(c), tz) === wall);
-    return new Date(valid.length > 0 ? Math.min(...valid) : before);
+    return storable(new Date(valid.length > 0 ? Math.min(...valid) : before), s);
   }
   m = DATETIME_RE.exec(s);
   if (!m || !validYmd(+m[1]!, +m[2]!, +m[3]!) || +m[4]! > 23 || +m[5]! > 59 || +m[6]! > 59)
     throw validationError(`invalid timestamp: ${s}`);
   const t = new Date(s);
   if (Number.isNaN(t.getTime())) throw validationError(`invalid timestamp: ${s}`);
-  return truncateToSecond(t);
+  return storable(truncateToSecond(t), s);
 }

@@ -121,3 +121,9 @@ export const updateNotificationSchema = z.union(
 );
 
 export type UpdateNotificationBody = z.output<typeof updateNotificationSchema>;
+
+/** The `notification` part of POST /admin/notifications/imports (§3.4); `liveDate` is parsed by the handler. */
+export const createImportSchema = z.strictObject({
+  ...contentFields,
+  liveDate: z.string({ message: 'liveDate must be a string' }),
+});

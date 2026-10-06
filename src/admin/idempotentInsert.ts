@@ -50,6 +50,11 @@ export async function insertIdempotent(
   const hash = createHash('sha256').update(canonicalJson(normalised)).digest('hex');
   const now = truncateToSecond(deps.clock.now());
   const typeRow = await deps.db('notification_types').where({ name: type }).first('id');
+  const [importUse, runUse] = await Promise.all([
+    deps.db('imports').where({ request_key: key }).first('id'),
+    deps.db('import_runs').where({ request_key: key }).first('id'),
+  ]);
+  if (importUse || runUse) throw validationError('Idempotency-Key already used for a different request');
   try {
     const [id] = await deps.db('notifications').insert({
       ...columns,
