@@ -36,3 +36,31 @@ describe('cancellation predicate', () => {
     expect(accounts).toEqual([1, 2]);
   });
 });
+
+describe('cancellation SQL constants agree with the builder', () => {
+  it('matrix active x removed x cancelled_before {NULL, before, equal, after created_at}', async () => {
+    const { CANCELLED_SQL, NOT_CANCELLED_SQL } = await import('../../src/lib/cancellation.js');
+    const created = new Date('2026-10-01T12:00:00Z');
+    const cbs = [null, new Date(created.getTime() - 1000), created, new Date(created.getTime() + 1000)];
+    const all: number[] = [];
+    for (const active of [true, false])
+      for (const removed of [true, false])
+        for (const cb of cbs) {
+          const n = await makeNotification(db, 'event', { active, removed, cancelled_before: cb });
+          const r = await makeDelivery(db, { notification_id: n.id, account_id: 1, sent_at: null }, created);
+          all.push(typeof r === 'object' ? (r as { id: number }).id : (r as number));
+        }
+    const base = () =>
+      db('notification_deliveries as d')
+        .join('notifications as n', 'n.id', 'd.notification_id')
+        .whereNull('d.sent_at');
+    const sorted = (xs: unknown[]) => xs.map(Number).sort((a, b) => a - b);
+    const builder = sorted(await cancelledScheduledDeliveries(db).pluck('d.id'));
+    const cancelled = sorted(await base().whereRaw(CANCELLED_SQL).pluck('d.id'));
+    const notCancelled = sorted(await base().whereRaw(NOT_CANCELLED_SQL).pluck('d.id'));
+    expect(cancelled).toEqual(builder);
+    expect(sorted([...cancelled, ...notCancelled])).toEqual(sorted(all));
+    expect(cancelled.filter((id) => notCancelled.includes(id))).toEqual([]);
+    expect(cancelled.length).toBe(14);
+  });
+});
