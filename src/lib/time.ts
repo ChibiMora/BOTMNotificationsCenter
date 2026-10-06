@@ -31,7 +31,6 @@ function tzOffsetMs(t: Date, tz: string): number {
   );
   return Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour!, +p.minute!, +p.second!) - t.getTime();
 }
-/** Parse a request timestamp (§3.1): date-time with Z/offset, or a plain date = midnight in `tz`. Throws 400 otherwise. */
 /** MySQL DATETIME range; instants are stored in UTC, so the range is checked in UTC for every accepted form. */
 const MIN_STORABLE_MS = Date.UTC(1000, 0, 1, 0, 0, 0);
 const MAX_STORABLE_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
@@ -42,6 +41,7 @@ function storable(t: Date, s: string): Date {
   return t;
 }
 
+/** Parse a request timestamp (§3.1): date-time with Z/offset, or a plain date = midnight in `tz`. Throws 400 otherwise. */
 export function parseRequestTimestamp(s: string, tz: string): Date {
   let m = DATE_RE.exec(s);
   if (m) {
