@@ -61,7 +61,7 @@ describe('rescan', () => {
     await expect(deps.queue.enqueue('fanout_filter', { notificationId: n.id })).rejects.toThrow('queue down');
     await rescan();
     await q.runAll();
-    expect(await ids(n.id)).toHaveLength(72);
+    expect(await ids(n.id)).toEqual(Array.from({ length: 72 }, (_, i) => i + 1));
   });
 
   it('a failing enqueue for one notification does not stop the others', async () => {

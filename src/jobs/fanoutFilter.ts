@@ -6,7 +6,13 @@ import type { Knex } from 'knex';
 import type { Deps } from '../lib/deps.js';
 import type { JobContext, JobPayloads } from '../queue/queue.js';
 import type { NotificationRow } from '../lib/rows.js';
-import { eligibleAccounts, idBetween, nextAccountId, notYetDelivered } from '../eligibility/buildQuery.js';
+import {
+  eligibleAccounts,
+  idBetween,
+  nextAccountId,
+  notYetDelivered,
+  UnusableFiltersError,
+} from '../eligibility/buildQuery.js';
 import { activeFilterNotifications } from '../lib/filterNotifications.js';
 import { insertDeliveries } from '../lib/insertDeliveries.js';
 import { monthKey } from '../lib/time.js';
@@ -34,8 +40,21 @@ export const fanoutFilter: (
     return;
   }
   const jobMonth = monthKey(deps.clock.now());
-  // Throws UnusableFiltersError on malformed filters: the job is retried and finally dead-lettered (the alarm).
-  eligibleAccounts(deps.dbReader, notification.filters);
+  // Throws UnusableFiltersError on malformed filters: the job is retried and finally dead-lettered (the alarm). Such a
+  // notification stays active and is re-enqueued by every rescan, so each attempt fails fast and says why: ids only,
+  // never the filters' content.
+  try {
+    eligibleAccounts(deps.dbReader, notification.filters);
+  } catch (err) {
+    if (err instanceof UnusableFiltersError) {
+      deps.metrics.count('fanout_filter.unusable_filters');
+      deps.log.error(
+        { notificationId, requestId: payload.requestId },
+        'fanout_filter: unusable filters, notification cannot be sent',
+      );
+    }
+    throw err;
+  }
   let written = 0;
   let stopped = 'done';
   // Each range starts at the lowest existing id at or above the cursor, so empty stretches of a sparse id space cost
@@ -56,13 +75,14 @@ export const fanoutFilter: (
       jobMonth,
     );
     const accounts: Array<{ id: number }> = await idBetween(query, lo, lo + ID_RANGE - 1);
-    // Re-checked on the writer (must be current) right before this range's inserts, so a deactivation committed
-    // since the previous check does not let a further range be written.
-    if (accounts.length > 0 && !(await activeFilterNotification(deps.db, notificationId))) {
-      stopped = 'deactivated or removed';
-      break;
-    }
+    let deactivated = false;
     for (let i = 0; i < accounts.length; i += deps.config.fanoutBatchSize) {
+      // Re-checked on the writer (must be current) right before each chunk's insert, so a deactivation or removal
+      // committed since the previous check stops the job within one chunk.
+      if (!(await activeFilterNotification(deps.db, notificationId))) {
+        deactivated = true;
+        break;
+      }
       // `now` is taken per chunk on purpose: created_at must be fresh for the cancellation rule. At a month boundary
       // a chunk can therefore carry a created_at in the new month under the old month key, with sent_at in the old one.
       const chunk = accounts.slice(i, i + deps.config.fanoutBatchSize).map((a) => ({
@@ -76,7 +96,7 @@ export const fanoutFilter: (
       written += result.inserted;
     }
     next = lo + ID_RANGE;
-    if (!(await activeFilterNotification(deps.db, notificationId))) {
+    if (deactivated || !(await activeFilterNotification(deps.db, notificationId))) {
       stopped = 'deactivated or removed';
       break;
     }
