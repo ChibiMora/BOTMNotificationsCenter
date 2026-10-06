@@ -1,4 +1,4 @@
-// Initial schema (§5.2–§5.7) except jobs (own migration, later unit). References accounts, never creates it (§5.8).
+// Initial schema (§5.2–§5.7) except jobs (created by 20261001000200_jobs). References accounts, never creates it (§5.8).
 import type { Knex } from 'knex';
 const TABLES = [
   `CREATE TABLE notification_types (

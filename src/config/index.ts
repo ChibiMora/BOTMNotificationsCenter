@@ -105,7 +105,6 @@ export function loadConfig(env: Record<string, string | undefined>) {
   const dbName = decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
   if (!DB_NAME_RE.test(dbName)) throw new Error('DATABASE_URL must name a database ([A-Za-z0-9_]+)');
   return {
-    nodeEnv: e.NODE_ENV,
     production,
     databaseUrl,
     databaseReaderUrl: withDb(e.DATABASE_READER_URL ?? e.DATABASE_URL, e.DB_NAME),
