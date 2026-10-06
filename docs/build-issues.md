@@ -112,3 +112,13 @@ Running list of every place the build had to choose because the tech design (`do
 | 69 | §8.1, §8.2, §11.5 | Events dropped without a retry — an invalid payload, an unknown account, an event older than the window — never reach the dead-job alarm, and the design names no alarm for them. Malformed trigger input is counted under the same metric as a failed enqueue. | Each drop is logged and counted under its own metric. No alarm is defined. | Tech-design change |
 | 70 | §8.2 vs §7.2 | `event_delivery` says "none → done" when no notification matches the event, while §7.2 says the per-account filter check runs after every event. | The per-account check always runs. | Tech-design change |
 | 71 | Dependency rule | The list of what `trigger` may import omits `config`, which `createNotificationTrigger(config)` needs. "No module-level singletons" has no exception for that factory's reused bundle. | `trigger` imports `config`; the bundle cache is the one module-level state. | Confirmation |
+
+## U4 Admin update
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 72 | §7.4 | The lock statement is `SELECT * FROM notifications … FOR UPDATE NOWAIT`; reading the type name needs a join, and locking through the join would also lock the type row, giving spurious 409s across notifications of one type. | Only the `notifications` row is locked; the type name is read afterwards in the same transaction. | Confirmation |
+| 73 | §3.4 | The outcome table says only "400" for `isActive` on a csv notification, has no row for a malformed `:id`, and gives no message for a bad body. | 400 `VALIDATION_ERROR` in each case; every bad body shape returns one message. | Confirmation |
+| 74 | §7.4 vs §9.5 | The `cancel_scheduled` payload is shown as `{ notificationId }`, while §9.5 says the request id is copied into every payload. | Both jobs carry `requestId`. | Tech-design change |
+| 75 | §5.2, B4 | The `active` column comment says it is false only when an admin sets it inactive, and B4 says csv is "always active", but remove sets `active = FALSE` for csv too. | Implemented as §7.4's SQL. The response derives a csv notification's `isActive` from `removed`. | Tech-design change |
+| 76 | §7.4, B5 | Deactivate and reactivate within the same clock second: deliveries created in that second satisfy `created_at <= cancelled_before` and are cancelled. An update that arrives while the cleanup job holds its momentary lock gets a 409. | Both follow from the design's `<=` rule and `NOWAIT`; left as is. | Confirmation |
