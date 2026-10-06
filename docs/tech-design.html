@@ -1,0 +1,1896 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notification Center Tech Design</title>
+<style>
+  :root {
+    --bg: #F5F6F3;
+    --surface: #FFFFFF;
+    --ink: #1E241F;
+    --muted: #5A6359;
+    --line: #DCE1DA;
+    --accent: #2E6B52;
+    --accent-ink: #24543F;
+    --accent-soft: #E7F0EB;
+    --code-bg: #EEF1EC;
+    --code-ink: #2A3328;
+    --warn-soft: #F4EDDE;
+    --warn-ink: #6B5A2E;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151916;
+      --surface: #1C211D;
+      --ink: #E6E9E3;
+      --muted: #9AA398;
+      --line: #2E3630;
+      --accent: #7CC3A4;
+      --accent-ink: #93D1B5;
+      --accent-soft: #223329;
+      --code-bg: #11150F;
+      --code-ink: #C9D1C5;
+      --warn-soft: #2E2A1C;
+      --warn-ink: #CBB878;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151916;
+    --surface: #1C211D;
+    --ink: #E6E9E3;
+    --muted: #9AA398;
+    --line: #2E3630;
+    --accent: #7CC3A4;
+    --accent-ink: #93D1B5;
+    --accent-soft: #223329;
+    --code-bg: #11150F;
+    --code-ink: #C9D1C5;
+    --warn-soft: #2E2A1C;
+    --warn-ink: #CBB878;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.0625rem;
+    line-height: 1.6;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    gap: 2.5rem;
+    max-width: none;
+    margin: 0;
+    padding: 2rem 2.5rem 6rem;
+  }
+  @media (max-width: 58rem) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+    nav.toc { position: static; max-height: none; border-bottom: 1px solid var(--line); padding-bottom: 1.25rem; }
+  }
+
+  nav.toc {
+    position: sticky;
+    top: 2rem;
+    align-self: start;
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
+    font-family: var(--sans);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+  nav.toc .toc-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.6875rem;
+    color: var(--muted);
+    margin-bottom: 0.75rem;
+  }
+  nav.toc ol { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+  nav.toc a { color: var(--muted); text-decoration: none; display: flex; gap: 0.5rem; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent-ink); }
+  nav.toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  nav.toc .n { font-family: var(--mono); color: var(--accent); font-size: 0.75rem; min-width: 1.3rem; }
+
+  header.doc-head { grid-column: 1 / -1; border-bottom: 2px solid var(--ink); padding-bottom: 1.5rem; }
+  header.doc-head h1 {
+    font-size: clamp(1.9rem, 4vw, 2.6rem);
+    line-height: 1.12;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+  header.doc-head .kicker {
+    font-family: var(--sans);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--accent-ink);
+    margin-bottom: 0.6rem;
+  }
+  header.doc-head .meta {
+    font-family: var(--sans);
+    font-size: 0.8125rem;
+    color: var(--muted);
+    margin-top: 0.9rem;
+  }
+  header.doc-head .meta code { font-family: var(--mono); font-size: 0.78rem; }
+
+  main { min-width: 0; }
+  main > section { padding: 2.25rem 0; border-bottom: 1px solid var(--line); }
+  main > section:last-of-type { border-bottom: none; }
+
+  h2 {
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    margin-bottom: 1rem;
+    text-wrap: balance;
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+  }
+  h2 .n { font-family: var(--mono); font-size: 0.95rem; color: var(--accent); font-weight: 400; }
+  h3 { font-size: 1.08rem; font-weight: 700; margin: 1.7rem 0 0.5rem; }
+  h3.ep { font-family: var(--mono); font-size: 0.95rem; font-weight: 600; margin-top: 2.2rem; padding-top: 1.2rem; border-top: 1px dashed var(--line); }
+  h3.ep .verb { color: var(--accent-ink); background: var(--accent-soft); border-radius: 3px; padding: 0.1rem 0.4rem; margin-right: 0.4rem; }
+  h4 { font-family: var(--sans); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 1.2rem 0 0.4rem; }
+
+  p { margin: 0 0 0.9rem; }
+  ul, ol { margin: 0 0 0.9rem; padding-left: 1.4rem; }
+  li { margin-bottom: 0.35rem; }
+  strong { font-weight: 700; }
+
+  a { color: var(--accent-ink); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .ref {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    border-radius: 3px;
+    padding: 0.08rem 0.32rem;
+    white-space: nowrap;
+  }
+
+  .alt {
+    font-family: var(--sans);
+    font-size: 0.8125rem;
+    color: var(--muted);
+    border-left: 2px solid var(--line);
+    padding-left: 0.75rem;
+    margin: -0.35rem 0 1rem;
+  }
+  .alt b { color: var(--ink); font-weight: 600; }
+
+  .scroll { overflow-x: auto; margin: 0 0 1.1rem; }
+  pre {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.55;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    min-width: min-content;
+  }
+  code { font-family: var(--mono); font-size: 0.85em; background: var(--code-bg); border-radius: 3px; padding: 0.05em 0.3em; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  table {
+    border-collapse: collapse;
+    font-family: var(--sans);
+    font-size: 0.8325rem;
+    line-height: 1.45;
+    min-width: 100%;
+  }
+  th {
+    text-align: left;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+    border-bottom: 2px solid var(--line);
+    padding: 0.35rem 1rem 0.35rem 0;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 0.45rem 1rem 0.45rem 0; vertical-align: top; }
+  td code, th code { font-size: 0.78rem; }
+  td.nw, td.nw code { white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin: 0 0 0.9rem;
+  }
+  .card .card-title { font-family: var(--sans); font-weight: 650; font-size: 0.9rem; margin-bottom: 0.3rem; }
+  .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+
+  .flag {
+    background: var(--warn-soft);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--warn-ink);
+    border-radius: 6px;
+    padding: 0.8rem 1.1rem;
+    margin: 0 0 1rem;
+    font-size: 0.95rem;
+  }
+  .flag .flag-label {
+    font-family: var(--sans);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--warn-ink);
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+  .flag p:last-child { margin-bottom: 0; }
+
+  .dec { border-top: 1px solid var(--line); padding: 0.9rem 0 0.3rem; }
+  .dec-title { font-family: var(--sans); font-weight: 650; font-size: 0.98rem; margin-bottom: 0.35rem; display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+  .dec-n { font-family: var(--mono); font-weight: 400; color: var(--accent-ink); background: var(--accent-soft); border-radius: 3px; padding: 0 0.4rem; min-width: 1.9rem; text-align: center; }
+  .dec-tag { font-family: var(--sans); font-weight: 400; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+  .dec p { margin: 0 0 0.45rem; padding-left: 6.2rem; text-indent: -6.2rem; font-size: 0.98rem; }
+  .dec-label { display: inline-block; width: 6.2rem; text-indent: 0; font-family: var(--sans); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+  details > summary { font-family: var(--sans); font-size: 0.875rem; color: var(--accent-ink); cursor: pointer; margin-bottom: 0.8rem; }
+
+  figure { margin: 1.2rem 0 1.4rem; }
+  figure .scroll { margin-bottom: 0.5rem; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem; }
+  figcaption { font-family: var(--sans); font-size: 0.8125rem; color: var(--muted); }
+  figcaption b { color: var(--ink); font-weight: 600; }
+  svg.dgm { display: block; width: 100%; min-width: 44rem; max-width: 68rem; margin: 0 auto; height: auto; color: var(--ink); }
+  svg.dgm text { font-family: var(--sans); fill: currentColor; }
+  svg.dgm .dgm-title { font-size: 12.5px; font-weight: 600; }
+  svg.dgm .dgm-sub { font-size: 11px; fill: var(--muted); }
+  svg.dgm .dgm-label { font-size: 11.5px; stroke: var(--surface); stroke-width: 5px; paint-order: stroke; stroke-linejoin: round; }
+  svg.dgm .dgm-mono { font-size: 11px; font-family: var(--mono); }
+  svg.dgm .dgm-box { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
+  svg.dgm .dgm-soft { fill: var(--code-bg); stroke: var(--line); }
+  svg.dgm .dgm-line { fill: none; stroke: currentColor; stroke-width: 1.3; }
+  svg.dgm .dgm-life { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 4; }
+  svg.dgm .dgm-frame { fill: var(--accent-soft); stroke: var(--line); opacity: 0.75; }
+  svg.dgm .dgm-loop { fill: none; stroke: var(--accent); stroke-dasharray: 6 4; opacity: 1; }
+  svg.dgm .dgm-frame-label { font-size: 11px; font-weight: 600; fill: var(--accent-ink); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<header class="doc-head">
+  <div class="kicker">Notification Center · Backend</div>
+  <h1>Notification Center Tech Design</h1>
+  <p class="meta">
+    <strong>This document is the source of truth for implementation, and standalone for that purpose:</strong> It contains the product
+    rules, the full API contracts, the storage schema, module boundaries, flows, and test plan — an implementer (human or
+    agent) needs nothing else. It was derived from the product spec (<code>spec.md</code>) and the architecture review
+    (<code>docs/architecture.md</code>). Everything still undecided is in <a href="#s14">§14</a>, in priority order. Ids like <span class="ref">R4</span> (product requirement, §2.2) and
+    <span class="ref">A38</span> (design decision, Appendix A) are provenance tags that resolve inside this document.
+  </p>
+</header>
+
+<nav class="toc" aria-label="Table of contents">
+  <div class="toc-label">Contents</div>
+  <ol>
+    <li><a href="#s1"><span class="n">1</span> Overview &amp; system map</a></li>
+    <li><a href="#s2"><span class="n">2</span> Behavior rules</a></li>
+    <li><a href="#s3"><span class="n">3</span> API contracts</a></li>
+    <li><a href="#s4"><span class="n">4</span> Stack &amp; reasons</a></li>
+    <li><a href="#s5"><span class="n">5</span> Storage schema</a></li>
+    <li><a href="#s6"><span class="n">6</span> Module layout &amp; interfaces</a></li>
+    <li><a href="#s7"><span class="n">7</span> Core flows</a></li>
+    <li><a href="#s8"><span class="n">8</span> Background work &amp; failure handling</a></li>
+    <li><a href="#s9"><span class="n">9</span> Cross-cutting concerns</a></li>
+    <li><a href="#s10"><span class="n">10</span> Testing strategy</a></li>
+    <li><a href="#s11"><span class="n">11</span> Deployment, rollback, observability</a></li>
+    <li><a href="#s12"><span class="n">12</span> Implementation units</a></li>
+    <li><a href="#s13"><span class="n">13</span> Risks accepted</a></li>
+    <li><a href="#s14"><span class="n">14</span> Decisions</a></li>
+    <li><a href="#sA"><span class="n">A</span> Decision register</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ============================================================ -->
+<section id="s1">
+  <h2><span class="n">1</span>Overview and system map</h2>
+
+  <p>The Notification Center lets internal admins publish in-app notifications to members of a book-subscription
+  service, and lets each member read their own list in the app. There is no push, email, or SMS: "sending" a
+  notification means creating a row that makes it appear in a member's in-app list.</p>
+
+  <h3>1.1 Vocabulary</h3>
+  <div class="scroll"><table>
+    <tr><th>Term</th><th>Meaning</th></tr>
+    <tr><td class="nw"><b>Notification</b></td><td>The admin-authored definition: image, headline, subheadline, link, type, and type-specific settings. One row in <code>notifications</code>. Addressed by an integer id on the admin surface only.</td></tr>
+    <tr><td class="nw"><b>Delivery</b></td><td>One notification landing in one member's list. One row in <code>notification_deliveries</code>. A member can hold several deliveries of the same notification (one per event occurrence, one per month for filter notifications). Addressed by an opaque <code>public_id</code> on the member surface.</td></tr>
+    <tr><td class="nw"><b>Scheduled / live</b></td><td>A delivery with <code>sent_at IS NULL</code> is scheduled (invisible, waiting for <code>due_at</code>); once <code>sent_at</code> is set it is live.</td></tr>
+    <tr><td class="nw"><b>Type</b></td><td><code>filter</code> (sent to every account matching attribute filters), <code>event</code> (sent when a member action occurs), <code>csv</code> (sent once to an uploaded list of account ids).</td></tr>
+    <tr><td class="nw"><b>Window</b></td><td>The member-visibility period: the current and previous calendar month, in UTC.</td></tr>
+    <tr><td class="nw"><b>Occurrence key</b></td><td>Caller-supplied identity of one real-world event occurrence (e.g. a shipment id); makes duplicate trigger calls harmless.</td></tr>
+    <tr><td class="nw"><b>Request key</b></td><td>Client-generated UUID sent on admin creates (<code>Idempotency-Key</code> header); makes a retried create return the original result.</td></tr>
+  </table></div>
+
+  <h3>1.2 System map</h3>
+  <figure>
+    <div class="scroll"><svg class="dgm" viewBox="0 0 900 505" role="img" aria-label="Component map: admin website and member app call the API process; business code embeds the NotificationTrigger; the worker process consumes the jobs table; everything persists in Aurora MySQL." xmlns="http://www.w3.org/2000/svg"><defs><marker id="arr-comp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs><rect class="dgm-box" x="20" y="45" width="170" height="50" rx="6"/><text class="dgm-title" x="105.0" y="67.0" text-anchor="middle">Admin website</text><text class="dgm-sub" x="105.0" y="83.0" text-anchor="middle">internal staff</text><rect class="dgm-box" x="20" y="115" width="170" height="50" rx="6"/><text class="dgm-title" x="105.0" y="137.0" text-anchor="middle">Member app</text><text class="dgm-sub" x="105.0" y="153.0" text-anchor="middle">logged-in members</text><rect class="dgm-box" x="20" y="185" width="170" height="44" rx="6" stroke-dasharray="5 4"/><text class="dgm-title" x="105.0" y="204.0" text-anchor="middle">Session + role system</text><text class="dgm-sub" x="105.0" y="220.0" text-anchor="middle">pre-existing · stand-in now</text><rect class="dgm-box" x="20" y="265" width="170" height="96" rx="6"/><text class="dgm-title" x="105.0" y="285" text-anchor="middle">Business code</text><text class="dgm-sub" x="105" y="301" text-anchor="middle">ship · enroll · pre-enroll</text><rect class="dgm-box" x="34" y="314" width="142" height="34" rx="6" style="stroke:var(--accent)" stroke-width="2"/><text class="dgm-title" x="105.0" y="335.0" text-anchor="middle">NotificationTrigger</text><rect class="dgm-box" x="290" y="20" width="210" height="215" rx="6"/><text class="dgm-title" x="395.0" y="40" text-anchor="middle">API process · src/api.ts</text><rect class="dgm-box dgm-soft" x="304" y="50" width="182" height="40" rx="6"/><text class="dgm-title" x="395.0" y="74.0" text-anchor="middle">/admin/* routes</text><rect class="dgm-box dgm-soft" x="304" y="120" width="182" height="40" rx="6"/><text class="dgm-title" x="395.0" y="144.0" text-anchor="middle">member routes</text><text class="dgm-sub" x="395" y="190" text-anchor="middle">auth · validation · errors</text><text class="dgm-sub" x="395" y="206" text-anchor="middle">rate limit · idempotency</text><rect class="dgm-box" x="290" y="262" width="210" height="200" rx="6"/><text class="dgm-title" x="395.0" y="282" text-anchor="middle">Worker process · src/worker.ts</text><rect class="dgm-box dgm-soft" x="304" y="294" width="182" height="26" rx="6"/><text class="dgm-sub" x="395" y="311" text-anchor="middle">queue consumer · 1 s poll</text><rect class="dgm-box dgm-soft" x="304" y="326" width="182" height="26" rx="6"/><text class="dgm-sub" x="395" y="343" text-anchor="middle">due-send · 60 s · every worker</text><rect class="dgm-box dgm-soft" x="304" y="358" width="182" height="26" rx="6"/><text class="dgm-sub" x="395" y="375" text-anchor="middle">rescan · daily + month start</text><rect class="dgm-box dgm-soft" x="304" y="390" width="182" height="26" rx="6"/><text class="dgm-sub" x="395" y="407" text-anchor="middle">expiry / archive · daily</text><rect class="dgm-box dgm-soft" x="304" y="422" width="182" height="26" rx="6"/><text class="dgm-sub" x="395" y="439" text-anchor="middle">housekeeping · daily</text><rect class="dgm-box" x="618" y="20" width="264" height="442" rx="6"/><text class="dgm-title" x="750.0" y="40" text-anchor="middle">Aurora MySQL</text><rect class="dgm-box dgm-soft" x="630" y="52" width="240" height="216" rx="6"/><text class="dgm-title" x="750.0" y="70" text-anchor="middle">owned by this service</text><text class="dgm-mono" x="644" y="94" text-anchor="start">notifications (incl. filters JSON)</text><text class="dgm-mono" x="644" y="118" text-anchor="start">notification_deliveries</text><text class="dgm-mono" x="644" y="142" text-anchor="start">archived_notification_deliveries</text><text class="dgm-mono" x="644" y="166" text-anchor="start">imports (+ runs, files, row errors)</text><text class="dgm-mono" x="644" y="190" text-anchor="start">jobs  ← stand-in queue</text><text class="dgm-mono" x="644" y="214" text-anchor="start">scheduled_runs</text><rect class="dgm-box" x="630" y="284" width="240" height="72" rx="6" stroke-dasharray="5 4"/><text class="dgm-title" x="750.0" y="302" text-anchor="middle">pre-existing · read-only</text><text class="dgm-mono" x="644" y="336" text-anchor="start">accounts  (seeded stand-in now)</text><polyline class="dgm-line" points="190,70 302,70" marker-end="url(#arr-comp)"/><text class="dgm-label" x="246" y="62" text-anchor="middle">HTTPS</text><polyline class="dgm-line" points="190,140 302,140" marker-end="url(#arr-comp)"/><text class="dgm-label" x="246" y="132" text-anchor="middle">HTTPS</text><polyline class="dgm-line" points="290,207 192,207" marker-end="url(#arr-comp)"/><text class="dgm-label" x="241" y="199" text-anchor="middle">session? admin?</text><polyline class="dgm-line" points="502,105 616,105" marker-end="url(#arr-comp)" marker-start="url(#arr-comp)"/><text class="dgm-label" x="559" y="89" text-anchor="middle">SQL reads / writes</text><text class="dgm-label" x="559" y="123" text-anchor="middle">+ enqueue jobs</text><polyline class="dgm-line" points="502,345 616,345" marker-end="url(#arr-comp)" marker-start="url(#arr-comp)"/><text class="dgm-label" x="559" y="329" text-anchor="middle">claim jobs</text><text class="dgm-label" x="559" y="363" text-anchor="middle">write deliveries</text><polyline class="dgm-line" points="105,361 105,484 750,484 750,464" marker-end="url(#arr-comp)"/><text class="dgm-label" x="435" y="476" text-anchor="middle">enqueue event_delivery job — never fails the business action (stand-in: a jobs row)</text></svg></div>
+    <figcaption><b>Figure 1 — Components.</b> Two processes built from one codebase share one Aurora database. The API
+    process serves both HTTP surfaces. Event notifications do not enter over HTTP: business code calls the in-process
+    <code>NotificationTrigger</code>, which only enqueues a job. The worker consumes the queue and runs the scheduled jobs. Dashed boxes are pre-existing
+    and not owned by this service; for now both are stand-ins (a seeded <code>accounts</code> table and header-based
+    authentication, §5.9 and §9.1). The <code>jobs</code> table shown here is the <strong>temporary stand-in</strong> for
+    the company's existing job queue (§1.4, §8.1).</figcaption>
+  </figure>
+
+  <h3>1.3 Three entry points</h3>
+  <ul>
+    <li><strong>Admin surface</strong> — <code>/admin/notifications…</code>: list, get, create (filter / event / CSV import), import status, activate / deactivate / remove. Requires a session <em>and</em> the admin role.</li>
+    <li><strong>Member surface</strong> — <code>/notifications…</code>: list my deliveries, get one, mark one clicked (a PATCH on the delivery). Requires a session; a member can only ever address their own deliveries.</li>
+    <li><strong>Trigger interface</strong> — <code>NotificationTrigger</code>, an in-process TypeScript class called by business code. Not HTTP. Two calls: <code>record(event)</code> from the ship / enroll / pre-enroll code paths, and <code>accountChanged(accountId)</code> from every code path that changes an account's country, policy, relationship status, or credits.</li>
+  </ul>
+
+  <h3>1.4 Pre-existing dependencies and what is assumed about them</h3>
+  <p>This service depends on three things it does not own. Each is reached through one adapter module so a mismatch with
+  reality is a one-file fix (confirming the real shapes is open item <a href="#d2">§14 item 2</a>).</p>
+  <div class="scroll"><table>
+    <tr><th>Dependency</th><th>Assumed shape</th><th>Adapter</th></tr>
+    <tr><td><b>accounts table</b> (same database)</td><td><code>accounts(id INT UNSIGNED PK, country, policy, relationship_status, credits INT)</code>. Stored values assumed: country <code>'US'|'CA'</code>; policy <code>'monthly'|'annual'</code>; relationship_status <code>'new_member'|'friend'|'bff'</code>. <strong>Stand-in for now:</strong> a <code>STANDINS</code>-gated migration creates this table with exactly that shape, and <code>npm run seed</code> fills it with a fixed set of fake accounts (§5.9).</td><td><code>src/eligibility/accountsSchema.ts</code></td></tr>
+    <tr><td><b>Session + role system</b></td><td>Can resolve a request to an account id, and answer "is this account an admin". <strong>Stand-in for now:</strong> a header-based provider — <code>X-Account-Id</code> names the caller, <code>ADMIN_ACCOUNT_IDS</code> names the admins — selected by <code>AUTH_IMPL=header</code> and refused in production (§9.1).</td><td><code>AuthProvider</code> interface (§6.3); stand-in in <code>src/middleware/headerAuth.ts</code></td></tr>
+    <tr><td><b>Job queue</b></td><td>The production queue is the company's existing queueing system; this service does not build one. It must give at-least-once delivery, retries with backoff, a dead-letter outcome, delayed delivery, and a way to extend a running job's lease. <strong>This build ships a temporary database-backed stand-in</strong> so the system runs end to end; it is not meant to scale (§8.1).</td><td><code>Queue</code> interface (§6.3); stand-in in <code>src/queue/dbQueue.ts</code></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s2">
+  <h2><span class="n">2</span>Behavior rules</h2>
+
+  <p>These are the rules the implementation must satisfy. §2.1 is the complete operational rule set; §2.2 lists the
+  product requirements they come from.</p>
+
+  <h3>2.1 Rules</h3>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>Rule</th><th>From</th></tr>
+    <tr><td class="nw">B1</td><td><b>Visibility.</b> A member sees a delivery if and only if all hold: it belongs to them; <code>sent_at</code> is non-null; <code>sent_at</code> is inside the window (B2); the parent notification is not removed. The notification's <code>active</code> flag plays <em>no</em> part in visibility.</td><td><span class="ref">A9</span> <span class="ref">R9</span></td></tr>
+    <tr><td class="nw">B2</td><td><b>Window.</b> In window ⇔ <code>sent_at ≥ 00:00:00 UTC on the first day of the previous calendar month</code>. A delivery sent Aug 15 is visible through Sep 30 and gone at Oct 1 00:00 UTC. Months are calendar months, not rolling periods.</td><td><span class="ref">R4</span> <span class="ref">A15</span> <span class="ref">A28</span></td></tr>
+    <tr><td class="nw">B3</td><td><b>Order.</b> The member list is sorted by <code>sent_at</code> descending.</td><td><span class="ref">R8</span></td></tr>
+    <tr><td class="nw">B4</td><td><b>Active.</b> <code>active</code> gates only the creation of <em>new</em> deliveries. Deliveries already live stay visible after deactivation. Creating a filter or event notification requires an explicit <code>isActive</code>; there is no default. CSV notifications are always active and the flag cannot be changed.</td><td><span class="ref">R9</span> <span class="ref">R18</span> <span class="ref">A25</span> <span class="ref">A26</span></td></tr>
+    <tr><td class="nw">B5</td><td><b>Deactivate.</b> Setting inactive cancels that notification's scheduled (unsent) deliveries: they never fire, even if the notification is reactivated later.</td><td><span class="ref">A47</span></td></tr>
+    <tr><td class="nw">B6</td><td><b>Remove.</b> Remove-from-app hides the notification from every member immediately, including those who already saw it; cancels its scheduled deliveries; stops all future sends; is irreversible.</td><td><span class="ref">R10</span> <span class="ref">A18</span> <span class="ref">A30</span> <span class="ref">A36</span> <span class="ref">A47</span></td></tr>
+    <tr><td class="nw">B7</td><td><b>Filter eligibility.</b> An account is eligible when it satisfies every filter: country ∈ selected set, policy ∈ selected set, relationship status ∈ selected set, <code>credits ≥ minimum</code>, <code>credits ≤ maximum</code>. Any filter that is omitted or empty imposes no constraint.</td><td><span class="ref">R3</span> <span class="ref">R15</span> <span class="ref">A24</span> <span class="ref">A45</span></td></tr>
+    <tr><td class="nw">B8</td><td><b>Filter sends.</b> While a filter notification is active, every eligible account receives it at most once per UTC calendar month. An account that becomes eligible later is sent it when the account changes (the business code reports the change, §7.2); a recurring rescan is the safety net for any change that was not reported. In a new month every still-eligible account receives a <em>new</em> delivery (new list entry, own timestamp, unclicked).</td><td><span class="ref">R16</span> <span class="ref">R17</span> <span class="ref">A17</span> <span class="ref">A21</span> <span class="ref">A48</span> <span class="ref">A56</span></td></tr>
+    <tr><td class="nw">B9</td><td><b>Event sends.</b> Each occurrence of the event produces one delivery per active event notification configured for that event. The same occurrence reported twice produces one. The spec's refer-a-friend example is handled as an <code>enrolled</code> event reported for the <em>referrer</em>: when a referred friend enrolls, the business code reports <code>enrolled</code> for the friend and again for the referrer (distinct occurrence keys), so two referrals mean two deliveries to the referrer.</td><td><span class="ref">R14</span> <span class="ref">A38</span></td></tr>
+    <tr><td class="nw">B10</td><td><b>Event timing.</b> <code>shipped</code> and <code>enrolled</code>: live at <code>occurredAt + delay days</code> (no delay → immediately). <code>preenrollAudiobook</code>: the event <em>is</em> the audiobook becoming available — business code reports it, once per member who pre-ordered, when the audiobook is published — and the delivery is immediate; any delay is ignored. This service never reads or schedules against a publication date.</td><td><span class="ref">R12</span> <span class="ref">R13</span> <span class="ref">A19</span> <span class="ref">A57</span></td></tr>
+    <tr><td class="nw">B11</td><td><b>Trigger safety.</b> Calling the trigger can never fail or roll back the business action that called it.</td><td><span class="ref">A42</span></td></tr>
+    <tr><td class="nw">B12</td><td><b>CSV sends.</b> A CSV notification is delivered exactly once, at its <code>liveDate</code>, to every valid account id in the file. Repeated ids count once. Unknown ids are reported and skipped; the rest still send.</td><td><span class="ref">R18</span> <span class="ref">A10</span> <span class="ref">A32</span> <span class="ref">A43</span></td></tr>
+    <tr><td class="nw">B13</td><td><b>Clicked.</b> Each delivery has its own clicked flag, false until the app sets it with <code>PATCH /notifications/:id</code>, which it does only on the first open; the call is idempotent. Reading a delivery never changes it.</td><td><span class="ref">R7</span> <span class="ref">A35</span></td></tr>
+    <tr><td class="nw">B14</td><td><b>Ownership.</b> Member endpoints address deliveries by opaque <code>public_id</code>. Any id that is not a visible delivery of the caller (B1) yields the same <code>404</code>, whatever the reason.</td><td><span class="ref">A37</span> <span class="ref">A40</span> <span class="ref">A54</span></td></tr>
+    <tr><td class="nw">B15</td><td><b>Time.</b> Every stored and transmitted timestamp is UTC. The API emits ISO-8601 with a <code>Z</code> suffix; the "sent 5 minutes ago" label is computed by the client from <code>liveDate</code>.</td><td><span class="ref">R6</span> <span class="ref">A28</span></td></tr>
+    <tr><td class="nw">B16</td><td><b>Retention.</b> Notification records are kept forever and the admin list shows all of them. Deliveries that leave the window are moved to an archive table.</td><td><span class="ref">A23</span> <span class="ref">A51</span> <span class="ref">A53</span></td></tr>
+    <tr><td class="nw">B17</td><td><b>No double sends.</b> All background processing is at-least-once; uniqueness on (notification, account, dedupe key) guarantees a retry never creates a second delivery.</td><td><span class="ref">A46</span></td></tr>
+  </table></div>
+
+  <figure>
+    <div class="scroll"><svg class="dgm" viewBox="0 0 900 300" role="img" aria-label="Delivery row lifecycle: created scheduled or live; due-send moves scheduled rows to live; a click marks them clicked; deactivate or remove deletes scheduled rows; the expiry job archives rows whose window has passed." xmlns="http://www.w3.org/2000/svg"><defs><marker id="arr-life" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs><circle cx="135" cy="34" r="6" fill="currentColor"/><circle cx="450" cy="34" r="6" fill="currentColor"/><polyline class="dgm-line" points="135,40 135,108" marker-end="url(#arr-life)"/><text class="dgm-label" x="147" y="70" text-anchor="start">created with a future due_at</text><text class="dgm-sub" x="147" y="86" text-anchor="start">(event delay · CSV liveDate)</text><polyline class="dgm-line" points="450,40 450,108" marker-end="url(#arr-life)"/><text class="dgm-label" x="462" y="70" text-anchor="start">created already due</text><text class="dgm-sub" x="462" y="86" text-anchor="start">(filter fan-out · immediate events)</text><rect class="dgm-box" x="40" y="110" width="190" height="60" rx="6"/><text class="dgm-title" x="135.0" y="137.0" text-anchor="middle">Scheduled</text><text class="dgm-sub" x="135.0" y="153.0" text-anchor="middle">sent_at NULL · not visible</text><rect class="dgm-box" x="350" y="110" width="200" height="60" rx="6" style="stroke:var(--accent)" stroke-width="2"/><text class="dgm-title" x="450.0" y="137.0" text-anchor="middle">Live</text><text class="dgm-sub" x="450.0" y="153.0" text-anchor="middle">sent_at set · member-visible</text><rect class="dgm-box" x="680" y="110" width="180" height="60" rx="6"/><text class="dgm-title" x="770.0" y="137.0" text-anchor="middle">Clicked</text><text class="dgm-sub" x="770.0" y="153.0" text-anchor="middle">is_clicked = TRUE</text><rect class="dgm-box" x="40" y="232" width="190" height="50" rx="6"/><text class="dgm-title" x="135.0" y="254.0" text-anchor="middle">Cancelled</text><text class="dgm-sub" x="135.0" y="270.0" text-anchor="middle">row deleted</text><rect class="dgm-box" x="350" y="232" width="200" height="50" rx="6"/><text class="dgm-title" x="450.0" y="254.0" text-anchor="middle">Archived</text><text class="dgm-sub" x="450.0" y="270.0" text-anchor="middle">moved to archive table</text><polyline class="dgm-line" points="230,140 348,140" marker-end="url(#arr-life)"/><text class="dgm-label" x="289" y="130" text-anchor="middle">due-send job</text><text class="dgm-sub" x="289" y="157" text-anchor="middle">due_at ≤ now</text><polyline class="dgm-line" points="550,140 678,140" marker-end="url(#arr-life)"/><text class="dgm-label" x="614" y="130" text-anchor="middle">PATCH isClicked: true</text><polyline class="dgm-line" points="135,170 135,230" marker-end="url(#arr-life)"/><text class="dgm-label" x="147" y="205" text-anchor="start">notification deactivated or removed</text><polyline class="dgm-line" points="450,170 450,230" marker-end="url(#arr-life)"/><text class="dgm-label" x="462" y="205" text-anchor="start">expiry job</text><polyline class="dgm-line" points="770,170 770,257 552,257" marker-end="url(#arr-life)"/><text class="dgm-label" x="661" y="249" text-anchor="middle">sent_at before window start</text></svg></div>
+    <figcaption><b>Figure 2 — Lifecycle of one delivery row.</b> Rows are born either scheduled or already live.
+    Two things hide a live row without changing it: the parent notification being removed, and the window passing
+    (the expiry job later archives it). Cancelled rows are deleted, not archived.</figcaption>
+  </figure>
+
+  <h3>2.2 Product requirements</h3>
+  <div class="scroll"><table>
+    <tr><th>Id</th><th>Requirement</th></tr>
+    <tr><td>R1</td><td>Provide a notification center for members.</td></tr>
+    <tr><td>R2</td><td>Exactly three notification types: filter-based, CSV mass upload, event-triggered.</td></tr>
+    <tr><td>R3</td><td>Filter attributes live on the account table: country (US, CA), policy (Monthly, Annual), relationship status (New Member, Friend, BFF), credits.</td></tr>
+    <tr><td>R4</td><td>Notifications are visible for 2 months (static months, not rolling), then wiped.</td></tr>
+    <tr><td>R5</td><td>Each notification has an icon or image, headline, subheadline, and a link to a page on the website.</td></tr>
+    <tr><td>R6</td><td>Each shows a timestamp relative to when it went live ("sent 5 minutes ago").</td></tr>
+    <tr><td>R7</td><td>Each has a per-member clicked / not-clicked state (blue bubble until first click).</td></tr>
+    <tr><td>R8</td><td>The member's list is ordered most recent first.</td></tr>
+    <tr><td>R9</td><td>Inactive stops new sends only; already-delivered notifications stay. Applies to event and filter types.</td></tr>
+    <tr><td>R10</td><td>"Remove from app" hides the notification from everyone, including those who already saw it.</td></tr>
+    <tr><td>R11</td><td>Event notifications use pre-created events: Shipped, Enrolled, Pre-enroll audiobook available.</td></tr>
+    <tr><td>R12</td><td>Pre-enroll audiobook notifications go live at the audiobook's publication date, overriding any delay.</td></tr>
+    <tr><td>R13</td><td>An event notification may have a delay in days; none means send immediately.</td></tr>
+    <tr><td>R14</td><td>An event notification fires on every occurrence of the event.</td></tr>
+    <tr><td>R15</td><td>Filters are multi-select; unselected means all. Credits min and max are inclusive and individually optional.</td></tr>
+    <tr><td>R16</td><td>While a filter notification is active, any account that comes to meet the criteria must receive it.</td></tr>
+    <tr><td>R17</td><td>A filter notification is sent at most once per static month per account.</td></tr>
+    <tr><td>R18</td><td>CSV notifications: active not editable; sent once at the admin-set date to every account in the file.</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s3">
+  <h2><span class="n">3</span>API contracts</h2>
+
+  <h3>3.1 Conventions</h3>
+  <ul>
+    <li><strong>Resources, not commands.</strong> Every path names a resource; state changes are a <code>PATCH</code> on that resource carrying only the fields that change (activate, remove, mark clicked); re-processing an import creates a new <em>run</em> resource. There are no verb endpoints.</li>
+    <li><strong>Naming.</strong> Booleans are <code>isX</code>; a resource's own identifier is <code>id</code>, and a reference to another resource is <code>&lt;resource&gt;Id</code>; type-specific fields are present only for their type.</li>
+    <li><strong>Bodies are JSON</strong> (<code>Content-Type: application/json</code>) in both directions, except the multipart CSV upload. JSON keys are camelCase <span class="ref">A27</span>.</li>
+    <li><strong>Notation.</strong> Bodies below are type specs, not examples: <code>"name": type // description</code>. Enum options are listed in the comment. Fields are required unless the comment says optional. Unknown request fields are rejected with <code>400</code>.</li>
+    <li><strong>Timestamps</strong> are ISO-8601 UTC strings, second precision, <code>Z</code> suffix — <code>2026-10-04T14:30:00Z</code>. Request timestamps may be a full date-time with an offset or <code>Z</code>, or a plain date (<code>2026-11-01</code>); a plain date means midnight at the start of that day in the business timezone (<code>BUSINESS_TIMEZONE</code>, default <code>America/New_York</code>) and is stored as the equivalent UTC instant. Fractional seconds are rounded down to the whole second. Anything else → <code>400</code> <span class="ref">A28</span>.</li>
+    <li><strong>Authentication.</strong> Every route requires a logged-in session → otherwise <code>401</code>. Every <code>/admin</code> route additionally requires the admin role → otherwise <code>403</code> <span class="ref">A2</span> <span class="ref">A34</span> <span class="ref">A44</span>.</li>
+    <li><strong>Pagination.</strong> List endpoints take <code>limit</code> (integer 1–25, default 25; larger values are clamped to 25; non-integers → <code>400</code>) and <code>cursor</code> (opaque string from a previous response; malformed → <code>400</code>). Responses are <code>{ "items": [...], "nextCursor": string | null }</code>; <code>null</code> means no more pages <span class="ref">A29</span>.</li>
+    <li><strong>Idempotent creates.</strong> The admin create endpoints (filter, event, import, import run) require an <code>Idempotency-Key: &lt;uuid&gt;</code> header (missing or not a UUID → <code>400</code>). Re-sending a key with the same request returns that resource's current representation with the original status code and creates nothing; the same key with a different endpoint or body is a <code>400</code> <span class="ref">A50</span>.</li>
+    <li><strong>Paths in, URLs out.</strong> Requests supply <code>image</code> and <code>link</code> as a <em>path only</em>; the service stores the path and builds the full URL in code when responding, by prefixing the site's base address, which is held outside this service's data <span class="ref">A3</span>. A valid path: starts with exactly one <code>/</code>; contains no scheme, host, <code>//</code>, backslash, <code>?</code>, <code>#</code>, <code>..</code> segment, whitespace, or control character. Anything else — including any full URL — is a <code>400</code>. Because a host can never be supplied, a notification cannot point off-site.</li>
+  </ul>
+
+  <h3>3.2 Errors</h3>
+  <p>Every error response uses one envelope <span class="ref">A31</span>:</p>
+  <div class="scroll"><pre><code>{
+  "error": string,    // one of the codes below
+  "message": string   // optional; human-readable detail, never required for client logic
+}</code></pre></div>
+  <div class="scroll"><table>
+    <tr><th>Status</th><th>Code</th><th>When</th></tr>
+    <tr><td class="num">400</td><td><code>VALIDATION_ERROR</code></td><td>Body, query, header, or upload fails validation; or the request is not allowed for this notification type.</td></tr>
+    <tr><td class="num">401</td><td><code>UNAUTHORIZED</code></td><td>No valid session.</td></tr>
+    <tr><td class="num">403</td><td><code>FORBIDDEN</code></td><td>Session is valid but lacks the admin role (admin routes only).</td></tr>
+    <tr><td class="num">404</td><td><code>NOT_FOUND</code></td><td>The addressed resource does not exist — or, on member routes, is not a visible delivery of the caller (B14).</td></tr>
+    <tr><td class="num">409</td><td><code>CONFLICT</code></td><td>The notification is already removed, or another update to it is in progress (admin PATCH only).</td></tr>
+    <tr><td class="num">429</td><td><code>RATE_LIMITED</code></td><td>Rate limit exceeded (any route).</td></tr>
+    <tr><td class="num">500</td><td><code>INTERNAL</code></td><td>Unexpected failure (any route).</td></tr>
+    <tr><td class="num">503</td><td><code>UNAVAILABLE</code></td><td>Database or the session/role system is unreachable (any route).</td></tr>
+  </table></div>
+  <p>The per-endpoint "Errors" lines list only the specific codes; 429 / 500 / 503 apply everywhere.</p>
+
+  <h3>3.3 Shared shapes</h3>
+  <p><strong>NotificationDetail</strong> — returned by the admin get, both creates, and the update:</p>
+  <div class="scroll"><pre><code>{
+  "id": integer,            // internal notification id
+  "type": string,           // filter | event | csv
+  "image": string,          // completed image URL
+  "headline": string,       // headline text shown in the notification header
+  "subheadline": string,    // secondary text shown under the headline
+  "link": string,           // completed URL of the linked site page
+  "isActive": boolean,      // whether new sends are enabled; for csv, true until removed
+  "isRemoved": boolean,     // whether removed from app
+  "createdAt": string,      // ISO-8601 UTC — when the notification was created
+  "liveDate": string,       // present only when type = csv: the scheduled send date (ISO-8601 UTC)
+  "activatedAt": string | null, // present only when type = filter or event: first activation time, null if never activated
+  "filters": {              // present only when type = filter; absent keys mean "all"
+    "country": string[],        // optional; "US" | "CA"
+    "policy": string[],         // optional; "monthly" | "annual"
+    "relationshipStatus": string[], // optional; "newMember" | "friend" | "bff"
+    "credits": {                // optional
+      "minimum": integer,       // optional; inclusive
+      "maximum": integer        // optional; inclusive
+    }
+  },
+  "eventTrigger": string,   // present only when type = event; shipped | enrolled | preenrollAudiobook (reported when the pre-ordered audiobook is published)
+  "delay": integer | null   // present only when type = event; days after the event, null = none
+}</code></pre></div>
+  <p><strong>Content field rules</strong> (all creates): <code>image</code> path ≤ 1024 and <code>link</code> path ≤ 2048
+  characters, both following the path rule in §3.1.</p>
+  <p><strong><code>headline</code> and <code>subheadline</code> are plain text and are sanitized on input:</strong></p>
+  <ul>
+    <li>Leading and trailing whitespace is trimmed; the result must be 1–255 characters.</li>
+    <li>Rejected with <code>400</code>: the characters <code>&lt;</code> and <code>&gt;</code> (so no HTML or script tag can be stored); control characters, including line breaks and tabs; and Unicode direction-override characters (U+202A–U+202E, U+2066–U+2069), which can make text display differently from what was typed.</li>
+    <li>The value is stored and returned exactly as accepted, never HTML-encoded by the API. Clients must display it as text, not as HTML or markdown.</li>
+  </ul>
+
+  <h3>3.4 Admin operations</h3>
+
+  <h3 class="ep"><span class="verb">GET</span>/admin/notifications</h3>
+  <p>Lists all notification records, newest first (<code>createdAt</code> descending). Not limited to the member
+  window: includes inactive, removed, and future-scheduled records <span class="ref">A53</span>.</p>
+  <h4>Query parameters</h4>
+  <div class="scroll"><pre><code>limit: integer        // optional; 1–25, default 25
+cursor: string        // optional; from a previous nextCursor
+type: string          // optional; filter | event | csv
+createdFrom: string   // optional; ISO-8601 — include records with createdAt >= this
+createdTo: string     // optional; ISO-8601 — include records with createdAt &lt; this</code></pre></div>
+  <p>Cursor: <code>base64url(JSON.stringify({ c: createdAtIso, i: id }))</code> of the last item, applied as
+  <code>(created_at, id) &lt; (:c, :i)</code>; it is only valid together with the filters it was issued under (a
+  different <code>type</code> or date range with an old cursor → <code>400</code>). <code>createdFrom</code> later than
+  <code>createdTo</code> returns an empty list, not an error.</p>
+  <h4>Response 200</h4>
+  <div class="scroll"><pre><code>{
+  "items": [
+    {
+      "id": integer,             // internal notification id
+      "headline": string,        // headline text
+      "subheadline": string,     // secondary text
+      "type": string,            // filter | event | csv
+      "createdAt": string,       // ISO-8601 UTC
+      "liveDate": string,        // csv only; see NotificationDetail
+      "activatedAt": string | null, // filter and event only; see NotificationDetail
+      "isActive": boolean,
+      "isRemoved": boolean
+    }
+  ],
+  "nextCursor": string | null
+}</code></pre></div>
+  <p>Errors: 400 (bad query), 401, 403.</p>
+
+  <h3 class="ep"><span class="verb">GET</span>/admin/notifications/:id</h3>
+  <p>Fetches one notification. <code>:id</code> is the integer notification id.</p>
+  <h4>Response 200</h4>
+  <p><code>NotificationDetail</code> (§3.3).</p>
+  <p>Errors: 401, 403, 404.</p>
+
+  <h3 class="ep"><span class="verb">POST</span>/admin/notifications/filter</h3>
+  <p>Creates a filter notification <span class="ref">A55</span>. Requires <code>Idempotency-Key</code>.</p>
+  <h4>Request</h4>
+  <div class="scroll"><pre><code>{
+  "image": string,          // image path, e.g. "/img/promo.png" (§3.1)
+  "headline": string,       // 1–255 chars
+  "subheadline": string,    // 1–255 chars
+  "link": string,           // link path, e.g. "/books/fall-picks" (§3.1)
+  "isActive": boolean,      // required: true = start sending now, false = create inactive
+  "filters": {              // optional; every key optional; omitted or empty array = all
+    "country": string[],        // "US" | "CA"
+    "policy": string[],         // "monthly" | "annual"
+    "relationshipStatus": string[], // "newMember" | "friend" | "bff"
+    "credits": {
+      "minimum": integer,   // optional; >= 0; inclusive lower bound
+      "maximum": integer    // optional; >= 0; inclusive upper bound; must be >= minimum when both given
+    }
+  }
+}</code></pre></div>
+  <h4>Response 201</h4>
+  <p><code>NotificationDetail</code>. If created active, a fan-out job is enqueued right after the insert commits (§7.2).</p>
+  <p>Errors: 400, 401, 403.</p>
+
+  <h3 class="ep"><span class="verb">POST</span>/admin/notifications/event</h3>
+  <p>Creates an event notification <span class="ref">A55</span>. Requires <code>Idempotency-Key</code>. Several
+  notifications may be configured for the same event; each occurrence then produces one delivery per notification.</p>
+  <h4>Request</h4>
+  <div class="scroll"><pre><code>{
+  "image": string,          // image path (§3.1)
+  "headline": string,       // 1–255 chars
+  "subheadline": string,    // 1–255 chars
+  "link": string,           // link path (§3.1)
+  "isActive": boolean,      // required: true = start sending now, false = create inactive
+  "eventTrigger": string,   // shipped | enrolled | preenrollAudiobook
+  "delay": integer          // optional; 0–365 days after the event; stored but ignored for preenrollAudiobook
+}</code></pre></div>
+  <h4>Response 201</h4>
+  <p><code>NotificationDetail</code>.</p>
+  <p>Errors: 400, 401, 403.</p>
+
+  <h3 class="ep"><span class="verb">POST</span>/admin/notifications/imports</h3>
+  <p>Creates a CSV notification and starts its import <span class="ref">A10</span> <span class="ref">A43</span>.
+  Requires <code>Idempotency-Key</code>. <code>Content-Type: multipart/form-data</code> with exactly two parts:</p>
+  <h4>Part <code>notification</code> (JSON text)</h4>
+  <div class="scroll"><pre><code>{
+  "image": string,       // image path (§3.1)
+  "headline": string,    // 1–255 chars
+  "subheadline": string, // 1–255 chars
+  "link": string,        // link path (§3.1)
+  "liveDate": string     // ISO-8601 — when the send happens; must be in the future (see below)
+}</code></pre></div>
+  <h4>Part <code>file</code> (CSV)</h4>
+  <ul>
+    <li>UTF-8 text; first line is the header, exactly <code>accountID</code>; every following non-empty line is one positive integer.</li>
+    <li>Limits: 10 MB and 1,000,000 data rows; at least one data row.</li>
+    <li>The whole upload is checked against these shape rules <em>before</em> responding. Any violation → <code>400</code> and nothing is created.</li>
+    <li><code>liveDate</code> must be later than the current time; a past or present value is rejected with <code>400 VALIDATION_ERROR</code> and the message <code>liveDate must be in the future</code>. Fractional seconds are rounded down to the whole second.</li>
+  </ul>
+  <h4>Response 202</h4>
+  <div class="scroll"><pre><code>{
+  "id": integer,             // the import; poll GET /admin/notifications/imports/:id
+  "notificationId": integer  // the csv notification this import created
+}</code></pre></div>
+  <p>Account existence checking, de-duplication, and delivery creation happen asynchronously (§7.3).</p>
+  <p>Errors: 400, 401, 403.</p>
+
+  <h3 class="ep"><span class="verb">GET</span>/admin/notifications/imports/:id</h3>
+  <p>Status and row-level report of one import <span class="ref">A43</span>.</p>
+  <h4>Response 200</h4>
+  <div class="scroll"><pre><code>{
+  "id": integer,                // the import
+  "notificationId": integer,    // the csv notification this import belongs to
+  "status": string,             // processing | completed | failed
+  "totalRows": integer,         // data rows in the uploaded CSV
+  "accepted": integer,          // distinct valid accounts that received a delivery row
+  "duplicatesIgnored": integer, // repeated account ids dropped
+  "runs": [                     // every processing attempt, oldest first; `status` above is the latest run's
+    {
+      "id": integer,            // the run
+      "status": string,         // processing | completed | failed
+      "startedAt": string,      // ISO-8601 UTC
+      "finishedAt": string | null,
+      "error": string | null    // short reason when failed
+    }
+  ],
+  "errors": [                   // one entry per distinct rejected id; empty while processing;
+                                //   on `failed`, whatever had been collected before the failure
+    {
+      "row": integer,           // 1-based data-row number of the id's first occurrence
+      "accountId": integer,     // the rejected account id
+      "reason": string          // UNKNOWN_ACCOUNT
+    }
+  ]
+}</code></pre></div>
+  <p>Invariant when <code>completed</code>: <code>totalRows = accepted + duplicatesIgnored + errors.length</code>.
+  <code>errors</code> lists <strong>every</strong> rejected id — it is not capped — so the totals always reconcile.
+  <code>accepted</code> is the number of distinct ids in the file that exist as accounts; it is the same however many
+  times the import job runs.</p>
+  <p><strong>When <code>status</code> is <code>failed</code></strong> (the job gave up after its last attempt): the
+  counters and <code>errors</code> hold whatever was recorded before the failure, the file is kept so the import can be
+  retried, and deliveries already created stay — they are correct deliveries, and re-running the import will not
+  duplicate them. The admin fixes the cause and starts a new <em>run</em> of the same import (below); a new upload is <em>not</em> the way
+  to recover, because it would create a second notification.</p>
+  <p>Errors: 401, 403, 404.</p>
+
+  <h3 class="ep"><span class="verb">POST</span>/admin/notifications/imports/:id/runs</h3>
+  <p>Starts a new run of an existing import. An import is processed by <em>runs</em>: the upload creates run 1
+  automatically; if a run ends <code>failed</code>, an admin creates another. A run re-processes the same file for the
+  same notification; the job is idempotent, so accounts already delivered to are skipped and the report is rebuilt from
+  scratch. Requires <code>Idempotency-Key</code> like the other creates. No request body.</p>
+  <h4>Response 202</h4>
+  <div class="scroll"><pre><code>{
+  "id": integer,             // the new run
+  "importId": integer,       // the import it belongs to
+  "notificationId": integer
+}</code></pre></div>
+  <p>Errors: 401, 403, 404; 409 <code>CONFLICT</code> if the import's latest run is not <code>failed</code> (a run is
+  already in progress, or the import completed).</p>
+
+  <h3 class="ep"><span class="verb">PATCH</span>/admin/notifications/:id</h3>
+  <p>Changes activation or removes from app. The body must contain exactly one of the two keys.</p>
+  <h4>Request (one of)</h4>
+  <div class="scroll"><pre><code>{ "isActive": boolean }  // enable or disable new sends; not allowed on csv notifications
+{ "isRemoved": true }    // literal true only; hide from every member, permanently</code></pre></div>
+  <h4>Outcome by case</h4>
+  <p>Rules are checked in this order, and the first that applies wins: body shape (400) → notification exists (404) →
+  not already removed (409) → type rule (400) → same value is a no-op (200) → apply.</p>
+  <div class="scroll"><table>
+    <tr><th>Case</th><th>Result</th></tr>
+    <tr><td>Body has both keys, neither, extra keys, or <code>isRemoved</code> ≠ <code>true</code></td><td>400</td></tr>
+    <tr><td><code>isActive</code> on a csv notification</td><td>400 <span class="ref">A26</span></td></tr>
+    <tr><td>Notification does not exist</td><td>404</td></tr>
+    <tr><td>Notification is already removed (any body)</td><td>409</td></tr>
+    <tr><td>Another update holds the row lock</td><td>409</td></tr>
+    <tr><td><code>isActive</code> equals the current value</td><td>200, no change</td></tr>
+    <tr><td><code>isActive: true</code></td><td>200. Sets active; sets first-activation time if unset; for filter type enqueues a fan-out job (§7.2).</td></tr>
+    <tr><td><code>isActive: false</code></td><td>200. Sets inactive and cancels the notification's scheduled deliveries (B5). Returns at once; the rows are cleaned up in the background (§7.4).</td></tr>
+    <tr><td><code>isRemoved: true</code></td><td>200. Sets removed and inactive; cancels scheduled deliveries (B6).</td></tr>
+  </table></div>
+  <h4>Response 200</h4>
+  <p><code>NotificationDetail</code> reflecting the new state.</p>
+  <p>Errors: 400, 401, 403, 404, 409.</p>
+
+  <h3>3.5 Member operations</h3>
+  <p>Every <code>:id</code> here is a delivery <code>public_id</code> (opaque string such as <code>dl_8f3a92kxQ1bZ</code>).
+  Internal integer ids never appear on this surface <span class="ref">A54</span>.</p>
+
+  <h3 class="ep"><span class="verb">GET</span>/notifications</h3>
+  <p>The caller's visible deliveries (B1), newest first (B3).</p>
+  <h4>Query parameters</h4>
+  <div class="scroll"><pre><code>limit: integer   // optional; 1–25, default 25
+cursor: string   // optional; from a previous nextCursor</code></pre></div>
+  <h4>Response 200</h4>
+  <div class="scroll"><pre><code>{
+  "items": [
+    {
+      "id": string,          // delivery public id
+      "headline": string,    // headline text shown in the notification header
+      "subheadline": string, // secondary text shown under the headline
+      "isClicked": boolean,  // whether this delivery has been clicked
+      "liveDate": string     // ISO-8601 UTC — when this delivery went live
+    }
+  ],
+  "nextCursor": string | null
+}</code></pre></div>
+  <p>List items deliberately carry no <code>image</code>; it is returned by the detail call <span class="ref">A41</span>.</p>
+  <p>Errors: 400 (bad query), 401.</p>
+
+  <h3 class="ep"><span class="verb">GET</span>/notifications/:id</h3>
+  <p>One delivery's full content. No side effects — safe to prefetch <span class="ref">A35</span>.</p>
+  <h4>Response 200</h4>
+  <div class="scroll"><pre><code>{
+  "id": string,          // delivery public id
+  "image": string,       // completed image URL
+  "headline": string,    // headline text
+  "subheadline": string, // secondary text
+  "link": string,        // completed URL of the linked site page
+  "liveDate": string,    // ISO-8601 UTC — when this delivery went live
+  "isClicked": boolean   // whether this delivery has been clicked
+}</code></pre></div>
+  <p>Errors: 401, 404 (B14).</p>
+
+  <h3 class="ep"><span class="verb">PATCH</span>/notifications/:id</h3>
+  <p>Updates the one member-writable field of a delivery: <code>isClicked</code>. The app sends it <strong>only the first
+  time</strong> the member opens the notification — that is, when the item's <code>isClicked</code> is still
+  <code>false</code>; later opens send nothing. The server is idempotent regardless: a repeat changes nothing and still
+  succeeds <span class="ref">A35</span>.</p>
+  <h4>Request</h4>
+  <div class="scroll"><pre><code>{ "isClicked": true }   // the only accepted body; it cannot be set back to false</code></pre></div>
+  <h4>Response 200</h4>
+  <p>The delivery, in the same shape as <code>GET /notifications/:id</code>, with <code>isClicked: true</code>.</p>
+  <p>Errors: 400 (any other body), 401, 404 (B14).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s4">
+  <h2><span class="n">4</span>Stack and the reason for each choice</h2>
+
+  <p>The product spec fixes the foundation: <strong>Node.js, TypeScript, Aurora MySQL, Koa</strong>. The rest are this
+  design's picks; where two options were close the runner-up is named.</p>
+
+  <div class="scroll"><table>
+    <tr><th>Concern</th><th>Choice</th><th>Why</th></tr>
+    <tr><td class="nw"><b>Runtime</b></td><td>Node.js 22 LTS, TypeScript <code>strict</code>, ESM</td><td>Mandated; strict mode because the contracts are precise enough to encode in types.</td></tr>
+    <tr><td class="nw"><b>HTTP</b></td><td>Koa, <code>@koa/router</code>, <code>koa-bodyparser</code> (1&nbsp;MB JSON cap), <code>@koa/multer</code> (memory storage, 10&nbsp;MB cap)</td><td>Koa mandated. Multer serves the single multipart route (CSV import).</td></tr>
+    <tr><td class="nw"><b>Validation</b></td><td><code>zod</code>, one schema per endpoint, <code>.strict()</code></td><td>Per-type create endpoints <span class="ref">A55</span> make every schema flat; zod gives the handler typed input and one place that produces <code>400</code>.</td></tr>
+    <tr><td class="nw"><b>DB access</b></td><td><code>knex</code> over <code>mysql2</code>, connection <code>timezone: 'Z'</code></td><td>The hot paths are SQL-shaped (eligibility query, keyset pagination, duplicate-skipping batch inserts); a query builder fits better than an ORM and brings the migration runner.</td></tr>
+    <tr><td class="nw"><b>Queue</b></td><td><b>The company's existing job queue</b>, reached through a <code>Queue</code> interface. Shipped here: a temporary <code>jobs</code>-table implementation.</td><td>Queueing is pre-existing infrastructure, not something this service should own. Every producer and handler is written against the interface and assumes only at-least-once delivery, so swapping the stand-in for the real queue touches one file. The stand-in exists to demonstrate the system working, not to carry production load (§8.1, §13.1).</td></tr>
+    <tr><td class="nw"><b>Scheduler</b></td><td>Timer loop inside the worker, single leader via MySQL <code>GET_LOCK</code></td><td>The scheduled jobs are DB-centric; a named lock gives "exactly one runner" with no new infrastructure.</td></tr>
+    <tr><td class="nw"><b>Public ids</b></td><td><code>nanoid</code>, 12 chars, prefixed <code>dl_</code></td><td>Opaque, orderless delivery ids <span class="ref">A54</span>; ~71 bits. A clash is detected by the unique index and the row is re-inserted with a fresh id (§5.3).</td></tr>
+    <tr><td class="nw"><b>CSV</b></td><td><code>csv-parse</code> (streaming)</td><td>Row-by-row parsing; memory is bounded by the 10&nbsp;MB upload cap (the upload is held in memory, and the import job builds a set of the file's distinct ids).</td></tr>
+    <tr><td class="nw"><b>Logging / metrics</b></td><td><code>pino</code> JSON; metrics as CloudWatch EMF log lines</td><td>§9.5, §11.4. No metrics agent needed.</td></tr>
+    <tr><td class="nw"><b>Tests</b></td><td><code>vitest</code>, <code>supertest</code>, MySQL 8 in Docker</td><td>§10.</td></tr>
+  </table></div>
+
+  <p class="alt"><b>Close seconds:</b> Drizzle instead of knex (nicer types, younger migrations) · ajv instead of zod
+  (faster, worse ergonomics) ·
+  EventBridge instead of the in-process scheduler (managed, one more dependency for four timers).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s5">
+  <h2><span class="n">5</span>Storage schema</h2>
+
+  <p>MySQL 8 dialect (Aurora MySQL 3). Worker and API sessions run at <code>READ COMMITTED</code>, so range scans such as due-send do not gap-lock the rows other jobs are inserting. All <code>DATETIME</code> columns hold UTC; the application never writes local
+  time <span class="ref">A28</span>. Table and column names are snake_case <span class="ref">A27</span>. Tables use
+  <code>utf8mb4</code>; the random-id columns are ASCII with a binary collation so comparisons are case-sensitive.
+  <code>created_at</code> columns are set by the database default (they are informational); every timestamp the
+  design reasons about — <code>sent_at</code>, <code>due_at</code>, <code>cancelled_before</code>, <code>live_date</code>
+  — is written by the application from its clock, truncated to whole seconds.</p>
+
+  <h3>5.1 Table map</h3>
+  <div class="scroll"><table>
+    <tr><th>Table</th><th>One row per</th><th>Written by</th></tr>
+    <tr><td><code>notification_types</code></td><td>type name (3 seeded rows)</td><td>migration only</td></tr>
+    <tr><td><code>notifications</code></td><td>notification, including its filters as a JSON column</td><td>admin API</td></tr>
+    <tr><td><code>notification_deliveries</code></td><td>delivery</td><td>worker (insert, send), member API (clicked), admin API (cancel)</td></tr>
+    <tr><td><code>archived_notification_deliveries</code></td><td>expired delivery</td><td>expiry job</td></tr>
+    <tr><td><code>imports</code>, <code>import_runs</code>, <code>import_files</code>, <code>import_row_errors</code></td><td>CSV import / one processing attempt / its file / rejected id</td><td>admin API, import job</td></tr>
+    <tr><td><code>jobs</code> <em>(temporary)</em></td><td>queued unit of work — stand-in queue only</td><td><code>src/queue/dbQueue.ts</code> and nothing else</td></tr>
+    <tr><td><code>scheduled_runs</code></td><td>scheduled job name</td><td>scheduler</td></tr>
+    <tr><td><code>accounts</code> <em>(stand-in)</em></td><td>fake member account — only where <code>STANDINS=true</code></td><td>seed script; tests</td></tr>
+  </table></div>
+
+  <h3>5.2 notification_types and notifications</h3>
+  <div class="scroll"><pre><code>CREATE TABLE notification_types (
+  id    TINYINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  name  VARCHAR(32) NOT NULL UNIQUE           -- seeded: 'filter', 'event', 'csv'
+);
+
+CREATE TABLE notifications (
+  id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,   -- admin-surface id; never shown to members
+  type           TINYINT UNSIGNED NOT NULL,                 -- FK notification_types
+  image_key      VARCHAR(1024) NOT NULL,                    -- path only; URL composed on read
+  headline       VARCHAR(255)  NOT NULL,
+  subheadline    VARCHAR(255)  NOT NULL,
+  link_path      VARCHAR(2048) NOT NULL,                    -- path only
+  active         BOOLEAN NOT NULL DEFAULT TRUE,             -- false only when an admin creates or sets it inactive
+  removed        BOOLEAN NOT NULL DEFAULT FALSE,            -- set once, never unset
+  live_date      DATETIME NULL,                             -- csv only: admin-set send date
+  delay          INT UNSIGNED NULL,                         -- event only: days after the event
+  event_trigger  VARCHAR(32) NULL,                          -- event only: 'shipped' | 'enrolled' | 'preenrollAudiobook'
+  filters        JSON NULL,                                 -- filter only: the API filters object, stored as sent (§5.4)
+  went_live_at   DATETIME NULL,                             -- filter/event: first activation time
+  cancelled_before DATETIME NULL,                           -- set on deactivate/remove: scheduled rows created
+                                                            --   at or before this instant must never send
+  request_key    CHAR(36) NULL,                             -- Idempotency-Key of the create (filter/event)
+  request_endpoint VARCHAR(16) NULL,                        -- 'filter' | 'event'; with request_hash, detects key reuse (§9.4)
+  request_hash   CHAR(64) NULL,                             -- SHA-256 of the request body
+  created_at     DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP()),
+  CONSTRAINT fk_notifications_type FOREIGN KEY (type) REFERENCES notification_types(id),
+  UNIQUE KEY uq_notifications_request_key (request_key),
+  KEY idx_notifications_created (created_at, id),           -- admin list order + cursor
+  KEY idx_notifications_type_created (type, created_at, id),-- admin list with type filter
+  KEY idx_notifications_event (event_trigger, active)       -- trigger lookup
+);</code></pre></div>
+  <p>Type-specific columns are nullable; which ones are set is guaranteed by the per-type create endpoints, not by DB
+  checks. The API field <code>liveDate</code> (csv) maps to <code>live_date</code>; <code>activatedAt</code> (filter, event)
+  maps to <code>went_live_at</code>.</p>
+
+  <h3>5.3 notification_deliveries (deliveries)</h3>
+  <div class="scroll"><pre><code>CREATE TABLE notification_deliveries (
+  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,  -- internal delivery id
+  public_id        CHAR(15) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,   -- 'dl_' + nanoid(12); case-sensitive
+  notification_id INT UNSIGNED NOT NULL,
+  account_id       INT UNSIGNED NOT NULL,
+  is_clicked       BOOLEAN NOT NULL DEFAULT FALSE,
+  sent_at          DATETIME NULL,              -- NULL = scheduled; non-NULL = live since then
+  due_at           DATETIME NOT NULL,          -- when the delivery should go live
+  occurrence_key   VARCHAR(128) NULL,          -- event deliveries: the caller's occurrence key
+  dedupe_key       VARCHAR(128) NOT NULL,      -- see table below
+  created_at       DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP()),
+  UNIQUE KEY uq_delivery_public (public_id),
+  UNIQUE KEY uq_delivery_dedupe (notification_id, account_id, dedupe_key),
+  KEY idx_member_list (account_id, sent_at, public_id),         -- member list, window, cursor
+  KEY idx_due_send (sent_at, due_at),                           -- due-send scan (sent_at IS NULL prefix)
+  KEY idx_by_notification (notification_id, sent_at),          -- cancel scheduled rows
+  CONSTRAINT fk_delivery_notification FOREIGN KEY (notification_id) REFERENCES notifications(id),
+  CONSTRAINT fk_delivery_account FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);</code></pre></div>
+
+  <p><strong><code>dedupe_key</code> is how rule B17 is enforced.</strong> The application sets it on every insert, and
+  a repeat insert with the same (notification, account, dedupe key) is skipped:</p>
+  <div class="scroll"><table>
+    <tr><th>Type</th><th>dedupe_key</th><th>Effect</th></tr>
+    <tr><td>event</td><td>the occurrence key (same value as <code>occurrence_key</code>)</td><td>the same occurrence reported twice inserts once <span class="ref">A38</span></td></tr>
+    <tr><td>filter</td><td>UTC month of the send, <code>'YYYY-MM'</code></td><td>one delivery per account per calendar month <span class="ref">A17</span> <span class="ref">A21</span></td></tr>
+    <tr><td>csv</td><td>the literal <code>'import'</code></td><td>one delivery per account per notification</td></tr>
+  </table></div>
+  <p><strong>How deliveries are inserted.</strong> Every delivery insert in the codebase goes through one helper,
+  <code>lib/insertDeliveries.ts</code>. It skips <em>only</em> a genuine repeat and surfaces everything else:</p>
+  <div class="scroll"><pre><code>INSERT INTO notification_deliveries (public_id, notification_id, account_id, sent_at, due_at, ...)
+VALUES (...), (...)
+ON DUPLICATE KEY UPDATE id = id;      -- a duplicate becomes a no-op; nothing else is suppressed</code></pre></div>
+  <ul>
+    <li><strong><code>INSERT IGNORE</code> is not used anywhere.</strong> It would also hide a missing account, a missing required value (stored as a zero date, which then sends immediately), a truncated key, and a <code>public_id</code> clash. The connection runs in strict SQL mode so those raise errors.</li>
+    <li><strong>Repeat</strong> (same notification, account, dedupe key): no-op, counted as "already delivered". This is the only silent case.</li>
+    <li><strong><code>public_id</code> clash:</strong> the statement cannot tell this from a repeat, so when fewer rows were inserted than sent, the helper re-reads which (notification, account, dedupe key) triples of the batch now exist. Any that are still missing clashed on <code>public_id</code>; they get fresh ids and are inserted again.</li>
+    <li><strong>Account does not exist</strong> (foreign-key error): the statement fails and the helper returns the offending account ids to the caller. The event job logs the unknown account and drops the event; the fan-out drops that account from the page; the import records it as <code>UNKNOWN_ACCOUNT</code>.</li>
+    <li><strong>Any other error</strong> propagates, and the job retries.</li>
+  </ul>
+  <p>The helper returns <code>{ inserted, alreadyDelivered, unknownAccounts }</code>, which is what handlers count and log from.</p>
+  <p>A dedicated <code>NOT NULL</code> column is used because MySQL unique indexes admit unlimited <code>NULL</code>s, so
+  a nullable <code>occurrence_key</code> alone could not constrain filter and csv rows.
+  Account deletion cascades to live deliveries <span class="ref">A52</span>.</p>
+
+  <h3>5.4 Filters</h3>
+  <p>A filter notification's filters live in the <code>notifications.filters</code> JSON column, in exactly the shape the
+  API accepts and returns (§3.3) — no separate tables, no join, and no translation between stored and wire forms:</p>
+  <div class="scroll"><pre><code>-- notifications.filters for "Canadian friends and BFFs with at least one credit":
+{"country": ["CA"], "relationshipStatus": ["friend", "bff"], "credits": {"minimum": 1}}
+
+-- "everyone":
+{}</code></pre></div>
+  <ul>
+    <li>A key that is absent imposes no constraint — that is how "omitted = all" is stored <span class="ref">A24</span> <span class="ref">A45</span>. Empty arrays are removed on write so they never appear.</li>
+    <li>Values are stored as the API spells them; the accounts adapter (§6.4) translates to the accounts table's own values at query time.</li>
+    <li>The column is <code>NULL</code> for event and csv notifications.</li>
+    <li>Validity is guaranteed by the request schema (§9.2). Optionally, a <code>CHECK (JSON_SCHEMA_VALID(...))</code> constraint on the column mirrors that schema as a database-level backstop.</li>
+    <li>Filters are only ever read one notification at a time, to build the eligibility query; nothing searches notifications by filter value. If that is ever needed, MySQL's JSON functions and multi-valued indexes cover it.</li>
+  </ul>
+
+  <h3>5.5 Imports</h3>
+  <div class="scroll"><pre><code>CREATE TABLE imports (
+  id                 INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,   -- the import id
+  notification_id   INT UNSIGNED NOT NULL,
+  status             ENUM('processing','completed','failed') NOT NULL DEFAULT 'processing',  -- mirrors the latest run
+  updated_at         DATETIME NOT NULL,                          -- progress heartbeat; touched after every chunk
+  total_rows         INT UNSIGNED NOT NULL DEFAULT 0,           -- set at upload
+  accepted           INT UNSIGNED NOT NULL DEFAULT 0,
+  duplicates_ignored INT UNSIGNED NOT NULL DEFAULT 0,
+  request_key        CHAR(36) NOT NULL,                         -- Idempotency-Key of the upload
+  request_hash       CHAR(64) NOT NULL,                         -- SHA-256 of JSON part + file (§9.4)
+  created_at         DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP()),
+  UNIQUE KEY uq_imports_request_key (request_key),
+  CONSTRAINT fk_imports_notification FOREIGN KEY (notification_id) REFERENCES notifications(id)
+);
+
+CREATE TABLE import_runs (
+  id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,   -- the run id
+  import_id   INT UNSIGNED NOT NULL,
+  status      ENUM('processing','completed','failed') NOT NULL DEFAULT 'processing',
+  started_at  DATETIME NOT NULL,
+  finished_at DATETIME NULL,
+  error       VARCHAR(255) NULL,
+  request_key CHAR(36) NULL,                               -- Idempotency-Key of the run-creating request (null for run 1)
+  UNIQUE KEY uq_import_runs_request_key (request_key),
+  KEY idx_import_runs_import (import_id, id),
+  CONSTRAINT fk_import_runs_import FOREIGN KEY (import_id) REFERENCES imports(id)
+);
+
+CREATE TABLE import_files (
+  import_id  INT UNSIGNED PRIMARY KEY,
+  data       MEDIUMBLOB NOT NULL,              -- the uploaded CSV; deleted when the import completes, kept while failed so the import can be re-run
+  CONSTRAINT fk_import_files_import FOREIGN KEY (import_id) REFERENCES imports(id)
+);
+
+CREATE TABLE import_row_errors (
+  import_id   INT UNSIGNED NOT NULL,
+  row_num     INT UNSIGNED NOT NULL,           -- 1-based data row of the id's first occurrence
+  account_id  BIGINT UNSIGNED NOT NULL,
+  reason      VARCHAR(32) NOT NULL,            -- 'UNKNOWN_ACCOUNT'
+  PRIMARY KEY (import_id, row_num),
+  CONSTRAINT fk_row_errors_import FOREIGN KEY (import_id) REFERENCES imports(id)
+);</code></pre></div>
+  <p>The uploaded file is parked in the database (10 MB fits <code>MEDIUMBLOB</code>; requires
+  <code>max_allowed_packet ≥ 16M</code>) so the import job needs no object store.</p>
+  <p class="alt"><b>Close second:</b> put the file in S3 and store its key — better for much larger files, one more
+  dependency at this size.</p>
+
+  <h3>5.6 Archive</h3>
+  <div class="scroll"><pre><code>CREATE TABLE archived_notification_deliveries (
+  id               BIGINT UNSIGNED PRIMARY KEY,   -- the original delivery id (not auto-increment)
+  public_id        CHAR(15) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  notification_id INT UNSIGNED NOT NULL,         -- parent rows are never deleted; no FK needed
+  account_id       INT UNSIGNED NOT NULL,         -- deliberately no FK: history outlives the account
+  is_clicked       BOOLEAN NOT NULL,
+  sent_at          DATETIME NOT NULL,             -- only live deliveries are ever archived
+  due_at           DATETIME NOT NULL,
+  occurrence_key   VARCHAR(128) NULL,
+  dedupe_key       VARCHAR(128) NOT NULL,
+  created_at       DATETIME NOT NULL,
+  archived_at      DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP()),
+  KEY idx_archive_account (account_id),
+  KEY idx_archive_notification (notification_id)
+);</code></pre></div>
+  <p>Written only by the expiry job and read only for audit; no API reads it <span class="ref">A23</span>
+  <span class="ref">A52</span>.</p>
+
+  <h3>5.7 Stand-in queue table and scheduler bookkeeping</h3>
+  <p><code>jobs</code> backs the temporary queue implementation only. It is created by its own migration so it can be
+  dropped cleanly when the real queue is wired in; no module other than <code>src/queue/dbQueue.ts</code> may read or
+  write it. <code>scheduled_runs</code> is permanent.</p>
+  <div class="scroll"><pre><code>CREATE TABLE jobs (
+  id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  type        VARCHAR(32) NOT NULL,           -- 'fanout_filter' | 'process_import' | 'event_delivery' | 'account_recheck' | 'cancel_scheduled'
+  payload     JSON NOT NULL,                  -- shapes in §8.2
+  run_at      DATETIME NOT NULL,              -- not claimable before this
+  attempts    TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  status      ENUM('queued','running','done','dead') NOT NULL DEFAULT 'queued',
+  locked_by   VARCHAR(64) NULL,
+  locked_at   DATETIME NULL,
+  last_error  TEXT NULL,
+  created_at  DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP()),
+  KEY idx_jobs_claim (status, run_at)
+);
+
+CREATE TABLE scheduled_runs (
+  name              VARCHAR(32) PRIMARY KEY,  -- 'rescan' | 'due_send' | 'expiry' | 'housekeeping'
+  last_started_at   DATETIME NULL,
+  last_completed_at DATETIME NULL,
+  last_status       VARCHAR(16) NULL          -- 'ok' | 'failed' | 'skipped'
+);</code></pre></div>
+
+  <h3>5.8 Migrations</h3>
+  <ul>
+    <li><strong>knex migrations, forward-only.</strong> No down-migrations in production; rollback is the previous image on a compatible schema (§11.3).</li>
+    <li><strong>Expand → migrate → contract</strong> for any change to a live table: add the nullable column or index, deploy code that tolerates both shapes, backfill, then drop the old shape in a later migration.</li>
+    <li>The initial migration creates every table above except <code>jobs</code>, which has its own migration (§5.7); it seeds <code>notification_types</code> (<code>filter</code>, <code>event</code>, <code>csv</code>) and the four <code>scheduled_runs</code> rows.</li>
+    <li><code>accounts</code> is pre-existing in production: the normal migrations reference it and never create or alter it. In development and test a separate stand-in migration creates it (§5.9).</li>
+  </ul>
+
+  <h3>5.9 Stand-in accounts table and seed</h3>
+  <p>Until the service runs against the real accounts table, a stand-in gives tests and local runs something real to
+  query and for the delivery foreign key to point at. It is marked temporary in the same way as the jobs table.</p>
+  <div class="scroll"><pre><code>-- migrations/standin_accounts.ts — runs only when STANDINS=true; refuses to run if the table already exists
+CREATE TABLE accounts (
+  id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  country             VARCHAR(2)  NOT NULL,     -- 'US' | 'CA'
+  policy              VARCHAR(16) NOT NULL,     -- 'monthly' | 'annual'
+  relationship_status VARCHAR(16) NOT NULL,     -- 'new_member' | 'friend' | 'bff'
+  credits             INT NOT NULL DEFAULT 0,
+  created_at          DATETIME NOT NULL DEFAULT (UTC_TIMESTAMP())
+);</code></pre></div>
+  <ul>
+    <li><strong>Shape:</strong> exactly the columns and values §1.4 assumes, so swapping in the real table changes only <code>accountsSchema.ts</code> if the real names differ.</li>
+    <li><strong>Seed</strong> (<code>npm run seed</code>, idempotent): inserts a deterministic set of accounts covering every filter combination — 2 countries × 2 policies × 3 statuses × credit values {0, 1, 2, 3, 5, 10} = 72 accounts with ids 1–72 in a fixed order; ids 1–3 are the admins in the example configuration. Tests can therefore state expected recipients by id without computing them.</li>
+    <li><strong>Gating:</strong> the migration and seed are skipped unless <code>STANDINS=true</code>; the process refuses to start with <code>STANDINS=true</code> in production. Test setup sets it, runs all migrations, then seeds.</li>
+    <li><strong>Changing an account</strong> in a test (to exercise <code>accountChanged</code>) is a plain <code>UPDATE</code> through the test helpers; there is no API for it.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="s6">
+  <h2><span class="n">6</span>Module layout and interfaces</h2>
+
+  <h3>6.1 Repository layout</h3>
+  <div class="scroll"><pre><code>package.json  tsconfig.json  docker-compose.yml  Dockerfile  knexfile.ts
+migrations/                    knex migration files
+src/
+  api.ts                       entrypoint: builds the Koa app, listens
+  worker.ts                    entrypoint: queue consumer + scheduler
+  app.ts                       createApp(deps) — pure factory used by api.ts and by tests
+  config/index.ts              zod-validated environment → typed Config
+  db/index.ts                  knex instance, withTransaction helper
+  lib/                         errors.ts, time.ts, publicId.ts, insertDeliveries.ts, urls.ts, cursor.ts, clock.ts, metrics.ts, logger.ts
+  middleware/                  requestContext.ts, auth.ts, requireAdmin.ts, errorMapper.ts, rateLimit.ts, idempotencyKey.ts
+  admin/                       router.ts, schemas.ts, listNotifications.ts, getNotification.ts, createFilter.ts,
+                               createEvent.ts, createImport.ts, getImport.ts, updateNotification.ts, presenter.ts
+  member/                      router.ts, schemas.ts, listDeliveries.ts, getDelivery.ts, updateDelivery.ts, visibility.ts
+  trigger/                     index.ts (NotificationTrigger, createNotificationTrigger)
+  eligibility/                 buildQuery.ts, accountsSchema.ts
+  queue/                       queue.ts (Queue interface + job types), dbQueue.ts (temporary stand-in)
+  jobs/                        index.ts (handler registry), fanoutFilter.ts, processImport.ts, eventDelivery.ts,
+                               accountRecheck.ts, cancelScheduled.ts
+  scheduler/                   index.ts (timer registry), leader.ts, schedule.ts, rescan.ts, dueSend.ts, expiry.ts, housekeeping.ts
+test/                          contract/, unit/, integration/, helpers/</code></pre></div>
+
+  <h3>6.2 What each module owns</h3>
+  <div class="scroll"><table>
+    <tr><th>Module</th><th>Owns</th><th>Serves</th></tr>
+    <tr><td class="nw"><code>config</code></td><td>Parsing <code>process.env</code> once at boot; refusing to start on invalid config.</td><td>everything</td></tr>
+    <tr><td class="nw"><code>db</code></td><td>The knex pool and <code>withTransaction(fn)</code>.</td><td>everything</td></tr>
+    <tr><td class="nw"><code>lib</code></td><td><code>AppError</code>; UTC month math (<code>windowStart(now)</code>, <code>monthKey(now)</code>); <code>newPublicId()</code>; <code>validatePath</code> / <code>toUrl</code> for image and link; cursor encode/decode; <code>Clock</code>; logger; metrics.</td><td>everything</td></tr>
+    <tr><td class="nw"><code>middleware</code></td><td>Request id + logging, session → <code>ctx.state.accountId</code>, admin gate, error envelope, rate limit, <code>Idempotency-Key</code> parsing.</td><td>both routers (§9)</td></tr>
+    <tr><td class="nw"><code>admin</code></td><td>The seven admin operations of §3.4 and the <code>NotificationDetail</code> presenter.</td><td>admin website</td></tr>
+    <tr><td class="nw"><code>member</code></td><td>The three member operations of §3.5; the single visibility query (§7.5).</td><td>member app</td></tr>
+    <tr><td class="nw"><code>trigger</code></td><td><code>NotificationTrigger</code> (§6.3).</td><td>business code</td></tr>
+    <tr><td class="nw"><code>eligibility</code></td><td>Turning a notification's <code>filters</code> object into a SQL predicate over <code>accounts</code>; the accounts column/value mapping.</td><td><code>fanoutFilter</code></td></tr>
+    <tr><td class="nw"><code>queue</code></td><td>The <code>Queue</code> interface and job payload types; the temporary <code>jobs</code>-table implementation of it. The adapter for the real queue will live here too.</td><td>admin, trigger, scheduler, worker</td></tr>
+    <tr><td class="nw"><code>jobs</code></td><td>One handler per job type (§8.2). Handlers are pure functions of <code>(deps, payload)</code>.</td><td>queue runner</td></tr>
+    <tr><td class="nw"><code>scheduler</code></td><td>Leader lock, the timer table, and the four scheduled jobs (§8.3).</td><td>worker entrypoint</td></tr>
+  </table></div>
+  <p><strong>Dependency rule:</strong> <code>admin</code>, <code>member</code>, <code>trigger</code>, <code>jobs</code>,
+  and <code>scheduler</code> never import each other. They share only <code>lib</code>, <code>db</code>,
+  <code>queue</code>, and <code>eligibility</code>. <code>jobs/index.ts</code> and <code>scheduler/index.ts</code> are
+  registries: each job or timer file exports itself, the registry lists them, and <code>worker.ts</code> reads only the
+  registries — so adding a job never edits another unit's file.</p>
+  <p><strong>Dependency injection, by hand.</strong> There is no container or framework. <code>src/api.ts</code> and
+  <code>src/worker.ts</code> are the two <em>composition roots</em>: the only places that build real things. Each reads
+  the config, opens the database pools, picks the queue implementation from <code>QUEUE_IMPL</code> and the auth provider
+  from <code>AUTH_IMPL</code>, creates the logger and metrics, and bundles them into one <code>Deps</code> object (§6.3).
+  That object is passed down — <code>createApp(deps)</code>, and <code>deps</code> as the first argument of every route
+  handler and job handler — and never imported. Interfaces exist exactly where an implementation is supplied from outside
+  or replaced in tests: <code>AuthProvider</code>, <code>Queue</code>, <code>Clock</code>, <code>Metrics</code>; the
+  database handle, config and logger are concrete. Tests build their own <code>Deps</code> with a fixed clock, a
+  <code>FakeQueue</code> and the header auth stand-in, and call the same <code>createApp</code> or handler. Business
+  code, which cannot be handed a <code>Deps</code>, gets <code>createNotificationTrigger(config)</code>, which builds
+  the small bundle the trigger needs.</p>
+
+  <h3>6.3 Key interfaces</h3>
+  <p><strong>Assumption:</strong> the business code that ships boxes, enrolls members, and publishes audiobooks is TypeScript
+  running in the same deployable as this service, so it can import <code>NotificationTrigger</code> directly and reach the
+  same queue. If it is not, the trigger becomes a thin internal HTTP endpoint with the same two operations.</p>
+  <div class="scroll"><pre><code>// lib/clock.ts — every "now" in the codebase comes from here
+export interface Clock { now(): Date }
+
+// middleware/auth.ts — the seam to the pre-existing session + role system.
+// Stand-in: middleware/headerAuth.ts implements it from request headers (§9.1); the real provider replaces it later.
+export interface AuthProvider {
+  getSession(ctx: Koa.Context): Promise&lt;{ accountId: number } | null&gt;;  // null → 401
+  isAdmin(accountId: number): Promise&lt;boolean&gt;;                         // false → 403; throws → 503
+}
+
+// trigger/index.ts — imported by the ship / enroll / pre-enroll code paths
+export type EventTrigger = 'shipped' | 'enrolled' | 'preenrollAudiobook';
+
+export interface TriggerEvent {
+  type: EventTrigger;
+  accountId: number;
+  occurredAt: Date;          // UTC instant of the occurrence
+  occurrenceKey: string;     // 1–128 chars; unique per real-world occurrence, e.g. `shipment:${id}`
+  // preenrollAudiobook: reported when the pre-ordered audiobook is published, once per pre-ordering member;
+  // suggested occurrenceKey `audiobook:${audiobookId}:${accountId}`
+}
+
+// Business code never constructs the class; it calls this with the shared Config and gets a ready instance
+// (queue implementation chosen by QUEUE_IMPL, logger and metrics wired).
+export function createNotificationTrigger(config: Config): NotificationTrigger;
+
+export class NotificationTrigger {
+  constructor(deps: Pick&lt;Deps, 'queue' | 'log' | 'metrics'&gt;);
+  // Enqueues exactly one `event_delivery` job. Never throws and never rejects:
+  // any failure is logged, counted, and swallowed. Call it after the business write has committed.
+  record(event: TriggerEvent): Promise&lt;void&gt;;
+
+  // Enqueues one `account_recheck` job. Same guarantees as record(): never throws, never rejects.
+  // Business code calls it after committing ANY change to an account's country, policy,
+  // relationship status, or credits — and after creating an account.
+  accountChanged(accountId: number): Promise&lt;void&gt;;
+}
+
+// queue/queue.ts — the only way any module produces or consumes background work
+export type JobType = 'fanout_filter' | 'process_import' | 'event_delivery' | 'account_recheck' | 'cancel_scheduled';
+
+// Every payload also carries `requestId?: string` — the API request (or scheduled run) that enqueued it (§9.5).
+export interface JobContext {
+  attempt: number;                 // 1-based
+  heartbeat(): Promise&lt;void&gt;;      // long handlers call this between pages to keep their lease
+}
+
+export interface Queue {
+  // Durable once resolved. May deliver the job more than once; never promises order.
+  enqueue(type: JobType, payload: object, opts?: { runAt?: Date }): Promise&lt;void&gt;;
+
+  // Starts delivering jobs to handlers. A handler that throws is retried with backoff;
+  // after the final attempt `onDead` is called once and the job is not delivered again.
+  consume(
+    handlers: Record&lt;JobType, (payload: any, ctx: JobContext) =&gt; Promise&lt;void&gt;&gt;,
+    opts: { onDead(type: JobType, payload: object, error: Error): Promise&lt;void&gt; },
+  ): Promise&lt;{ stop(): Promise&lt;void&gt; }&gt;;
+}
+
+// lib/deps.ts — what every module receives instead of importing singletons
+export interface Deps {
+  db: Knex;                       // writer pool, or a transaction where a caller passes one
+  dbReader: Knex;                 // reader endpoint for heavy reads (fan-out eligibility); same as db when none is configured
+  config: Config;                 // parsed environment (§9.6)
+  clock: Clock;
+  auth: AuthProvider;
+  queue: Queue;                   // dbQueue, the real adapter, or FakeQueue in tests — chosen by QUEUE_IMPL
+  log: Logger;                    // pino logger (child per request / job)
+  metrics: Metrics;
+}
+
+// lib/metrics.ts — emitted as CloudWatch EMF lines through the logger
+export interface Metrics {
+  count(name: string, value?: number, dims?: Record&lt;string, string&gt;): void;
+  timing(name: string, ms: number, dims?: Record&lt;string, string&gt;): void;
+  gauge(name: string, value: number, dims?: Record&lt;string, string&gt;): void;
+}
+
+// test/helpers/fakeQueue.ts — in-memory Queue for tests
+export class FakeQueue implements Queue {
+  enqueued: Array&lt;{ type: JobType; payload: object; runAt?: Date }&gt;;
+  consume(...): Promise&lt;{ stop(): Promise&lt;void&gt; }&gt;;   // registers handlers; does not start a loop
+  runAll(): Promise&lt;void&gt;;        // runs every enqueued job once through its handler, in order; failures are retried up to maxAttempts then passed to onDead
+  failNextEnqueue(error: Error): void;   // makes the next enqueue reject — for trigger-safety tests
+}</code></pre></div>
+
+  <h3>6.4 Eligibility query</h3>
+  <p><code>eligibility/buildQuery.ts</code> exports
+  <code>eligibleAccounts(db, filters): Knex.QueryBuilder</code> selecting <code>accounts.id</code>. It takes the
+  notification's parsed <code>filters</code> object and appends one predicate per key that is present:</p>
+  <div class="scroll"><pre><code>SELECT a.id FROM accounts a
+WHERE 1 = 1
+  AND a.country IN (:countries)                    -- only if filters.country is present
+  AND a.policy IN (:policies)                      -- only if filters.policy is present
+  AND a.relationship_status IN (:relationships)    -- only if filters.relationshipStatus is present
+  AND a.credits >= :creditsMin                     -- only if filters.credits.minimum is present
+  AND a.credits &lt;= :creditsMax                     -- only if filters.credits.maximum is present</code></pre></div>
+  <p><code>accountsSchema.ts</code> holds the table name, the four column names, and the API-value → stored-value maps
+  (for example <code>newMember → new_member</code>). It is the only file that knows the accounts table's shape.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s7">
+  <h2><span class="n">7</span>Core flows</h2>
+
+  <h3>7.1 Event notification</h3>
+  <figure>
+    <div class="scroll"><svg class="dgm" viewBox="0 0 900 434" role="img" aria-label="Event notification sequence: business code calls the trigger, which enqueues a job; the queue delivers it to a worker, which inserts an idempotent delivery row; delayed rows are released by due-send; the member API reads it." xmlns="http://www.w3.org/2000/svg"><defs><marker id="arr-seqevent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs><rect class="dgm-box" x="13.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="75.0" y="33.0" text-anchor="middle">Business code</text><line class="dgm-life" x1="75.0" y1="48" x2="75.0" y2="426"/><rect class="dgm-box" x="163.0" y="10" width="124" height="38" rx="6" style="stroke:var(--accent)" stroke-width="2"/><text class="dgm-title" x="225.0" y="33.0" text-anchor="middle">Trigger</text><line class="dgm-life" x1="225.0" y1="48" x2="225.0" y2="426"/><rect class="dgm-box" x="313.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="375.0" y="33.0" text-anchor="middle">Job queue</text><line class="dgm-life" x1="375.0" y1="48" x2="375.0" y2="426"/><rect class="dgm-box" x="463.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="525.0" y="33.0" text-anchor="middle">Worker</text><line class="dgm-life" x1="525.0" y1="48" x2="525.0" y2="426"/><rect class="dgm-box" x="613.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="675.0" y="33.0" text-anchor="middle">Deliveries</text><line class="dgm-life" x1="675.0" y1="48" x2="675.0" y2="426"/><rect class="dgm-box" x="763.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="825.0" y="33.0" text-anchor="middle">Member API</text><line class="dgm-life" x1="825.0" y1="48" x2="825.0" y2="426"/><polyline class="dgm-line" points="75.0,92 223.0,92" marker-end="url(#arr-seqevent)"/><text class="dgm-label" x="150.0" y="85" text-anchor="middle">1  record(event)</text><polyline class="dgm-line" points="225.0,134 373.0,134" marker-end="url(#arr-seqevent)"/><text class="dgm-label" x="300.0" y="127" text-anchor="middle">2  enqueue event_delivery</text><polyline class="dgm-line" points="225.0,176 77.0,176" marker-end="url(#arr-seqevent)" stroke-dasharray="5 4"/><text class="dgm-label" x="150.0" y="169" text-anchor="middle">3  returns · never throws</text><polyline class="dgm-line" points="375.0,218 523.0,218" marker-end="url(#arr-seqevent)"/><text class="dgm-label" x="450.0" y="211" text-anchor="middle">4  deliver job</text><polyline class="dgm-line" points="525.0,260 673.0,260" marker-end="url(#arr-seqevent)"/><text class="dgm-label" x="600.0" y="253" text-anchor="middle">5  insert row (skips repeats)</text><rect class="dgm-frame" x="12" y="294" width="876" height="68" rx="6"/><text class="dgm-frame-label" x="22" y="308" text-anchor="start">due-send · every 60 s · delayed rows only; immediate rows are inserted already live</text><polyline class="dgm-line" points="525.0,336 673.0,336" marker-end="url(#arr-seqevent)"/><text class="dgm-label" x="600.0" y="329" text-anchor="middle">6  SET sent_at = now</text><polyline class="dgm-line" points="825.0,378 677.0,378" marker-end="url(#arr-seqevent)"/><text class="dgm-label" x="750.0" y="371" text-anchor="middle">7  SELECT visible rows</text></svg></div>
+    <figcaption><b>Figure 3 — From member action to visible notification.</b> The business code path only ever
+    waits on one enqueue (steps 1–3). Everything that can fail happens later, in the worker, and is retried.</figcaption>
+  </figure>
+  <ol>
+    <li>Business code calls <code>trigger.record(event)</code> after its own write has committed.</li>
+    <li>The trigger enqueues one <code>event_delivery</code> job carrying the event. No reads, no lookups.</li>
+    <li>It returns. Errors are swallowed and counted (B11).</li>
+    <li>The queue delivers the job to a worker.</li>
+    <li>The handler loads active, non-removed event notifications whose <code>event_trigger</code> matches. For each it computes <code>due_at</code> (B10) and inserts one delivery with <code>dedupe_key = occurrenceKey</code>. If <code>due_at ≤ now</code> the row is inserted already live (<code>sent_at = now</code>). A repeat of the same occurrence hits the unique index and inserts nothing (B9).</li>
+    <li>For rows inserted scheduled (a <code>shipped</code> or <code>enrolled</code> notification with a delay), the due-send job sets <code>sent_at</code> once <code>due_at</code> passes.</li>
+    <li>The member API returns the delivery because it now satisfies B1.</li>
+  </ol>
+
+  <h3>7.2 Filter notification</h3>
+  <figure>
+    <div class="scroll"><svg class="dgm" viewBox="0 0 900 522" role="img" aria-label="Filter notification sequence: activation enqueues a fan-out job; the worker loops in batches of up to 1,000 accounts — select eligible accounts with no delivery this month, insert their deliveries, re-check the notification and the month — until a batch is empty; the rescan schedule re-enqueues the same job." xmlns="http://www.w3.org/2000/svg"><defs><marker id="arr-seqfilter" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs><rect class="dgm-box" x="13.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="75.0" y="33.0" text-anchor="middle">Admin</text><line class="dgm-life" x1="75.0" y1="48" x2="75.0" y2="514"/><rect class="dgm-box" x="163.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="225.0" y="33.0" text-anchor="middle">Admin API</text><line class="dgm-life" x1="225.0" y1="48" x2="225.0" y2="514"/><rect class="dgm-box" x="313.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="375.0" y="33.0" text-anchor="middle">Job queue</text><line class="dgm-life" x1="375.0" y1="48" x2="375.0" y2="514"/><rect class="dgm-box" x="463.0" y="10" width="124" height="38" rx="6" style="stroke:var(--accent)" stroke-width="2"/><text class="dgm-title" x="525.0" y="33.0" text-anchor="middle">Worker</text><line class="dgm-life" x1="525.0" y1="48" x2="525.0" y2="514"/><rect class="dgm-box" x="613.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="675.0" y="33.0" text-anchor="middle">accounts</text><line class="dgm-life" x1="675.0" y1="48" x2="675.0" y2="514"/><rect class="dgm-box" x="763.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="825.0" y="33.0" text-anchor="middle">Deliveries</text><line class="dgm-life" x1="825.0" y1="48" x2="825.0" y2="514"/><polyline class="dgm-line" points="75.0,92 223.0,92" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="150.0" y="85" text-anchor="middle">1  PATCH { isActive: true }</text><polyline class="dgm-line" points="225.0,134 373.0,134" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="300.0" y="127" text-anchor="middle">2  enqueue fanout_filter</text><polyline class="dgm-line" points="225.0,176 77.0,176" marker-end="url(#arr-seqfilter)" stroke-dasharray="5 4"/><text class="dgm-label" x="150.0" y="169" text-anchor="middle">3  200 OK</text><polyline class="dgm-line" points="375.0,218 523.0,218" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="450.0" y="211" text-anchor="middle">4  deliver job</text><rect class="dgm-frame dgm-loop" x="12" y="252" width="876" height="152" rx="6"/><text class="dgm-frame-label" x="22" y="266" text-anchor="start">loop · one batch of up to 1,000 accounts · repeats until a batch comes back empty</text><polyline class="dgm-line" points="525.0,294 673.0,294" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="600.0" y="287" text-anchor="middle">5  next 1,000 eligible, unsent this month</text><polyline class="dgm-line" points="525.0,336 823.0,336" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="675.0" y="329" text-anchor="middle">6  insert batch · sent_at = now · dedupe_key = YYYY-MM</text><polyline class="dgm-line" points="525.0,366 551.0,366 551.0,382 528.0,382" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="559.0" y="378" text-anchor="start">7  still active? same month? heartbeat</text><rect class="dgm-frame" x="12" y="424" width="876" height="68" rx="6"/><text class="dgm-frame-label" x="22" y="438" text-anchor="start">rescan · daily + first of month — enqueues the same job, so steps 4–7 repeat</text><polyline class="dgm-line" points="525.0,466 377.0,466" marker-end="url(#arr-seqfilter)"/><text class="dgm-label" x="450.0" y="459" text-anchor="middle">8  enqueue fanout jobs</text></svg></div>
+    <figcaption><b>Figure 4 — Activation and rescan run the same job, and the job works in batches.</b> The dashed box is the batch loop: each pass takes the next range of 10,000 account ids, inserts deliveries for the eligible accounts in it that have none this month, then re-checks the notification and the month before the next pass. The only difference between activation and rescan is who enqueues the job. The month-scoped dedupe key makes the job safe to run any number of times.</figcaption>
+  </figure>
+  <ol>
+    <li>An admin activates a filter notification (or creates it with <code>isActive: true</code>).</li>
+    <li>After the write that sets <code>active</code> commits, the API enqueues <code>fanout_filter { notificationId }</code>. If that enqueue fails the request still succeeds and the failure is logged: the next rescan enqueues the same job, so the send is delayed, not lost.</li>
+    <li>The API responds; the send proceeds in the background.</li>
+    <li>The queue delivers the job to a worker.</li>
+    <li>It takes the next range of 10,000 account ids and selects the eligible accounts in it (§6.4) that have no delivery of this notification with this month's dedupe key.</li>
+    <li>It inserts that batch through the idempotent insert helper (§5.3), live immediately — send time and <code>'YYYY-MM'</code> key taken from the same instant.</li>
+    <li>Before the next batch it re-checks that the notification is still active and not removed and that the month has not changed, and renews its job lease. It stops when any check fails or the ranges are exhausted.</li>
+    <li>The rescan schedule enqueues the same job for every active filter notification: daily as the safety net for unreported account changes, and just after each month starts to produce that month's send (B8).</li>
+  </ol>
+
+  <h4>When an account changes</h4>
+  <p>Fan-out and rescan cover "everyone who matches now". Rule B8 also requires that an account which <em>comes</em> to
+  match is sent the notification then, not at the next scan. Two mechanisms do this together <span class="ref">A56</span>:</p>
+  <ol>
+    <li><strong>Reported changes (immediate).</strong> Business code calls <code>trigger.accountChanged(accountId)</code>
+      after committing any change to the four filter attributes. That enqueues <code>account_recheck { accountId }</code>.
+      The handler evaluates <em>that one account</em> against every active filter notification (the §6.4 query with
+      <code>AND a.id = :accountId</code>) and inserts a delivery for each one it matches and has not received this month.</li>
+    <li><strong>Event-driven changes (free).</strong> The <code>event_delivery</code> handler runs the same per-account
+      check after it finishes, because shipping and enrolling usually change credits or status. No extra
+      call from business code is needed for those three paths.</li>
+    <li><strong>Rescan (safety net).</strong> Anything not reported — a missed call site, a batch job, a manual database
+      fix — is caught by the daily rescan.</li>
+  </ol>
+  <p><strong>Call sites business code must cover</strong> (these live outside this repository; this service provides the
+  method and the tests, not the calls): account creation / enrollment; credit grant, spend, refund, expiry, and manual
+  adjustment; plan (policy) change; relationship-status change; country change; any admin or support tool and any batch
+  job that writes those columns.</p>
+
+  <h3>7.3 CSV import</h3>
+  <figure>
+    <div class="scroll"><svg class="dgm" viewBox="0 0 900 736" role="img" aria-label="CSV import sequence: the upload is shape-validated and stored, the API answers 202 with an import id, the worker loops over the distinct ids in chunks of 1,000 — checking which exist and inserting scheduled deliveries — then marks the run completed; due-send releases the deliveries at liveDate; a failed run can be followed by a new run on the same import." xmlns="http://www.w3.org/2000/svg"><defs><marker id="arr-seqcsv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs><rect class="dgm-box" x="13.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="75.0" y="33.0" text-anchor="middle">Admin</text><line class="dgm-life" x1="75.0" y1="48" x2="75.0" y2="728"/><rect class="dgm-box" x="163.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="225.0" y="33.0" text-anchor="middle">Admin API</text><line class="dgm-life" x1="225.0" y1="48" x2="225.0" y2="728"/><rect class="dgm-box" x="313.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="375.0" y="33.0" text-anchor="middle">imports · queue</text><line class="dgm-life" x1="375.0" y1="48" x2="375.0" y2="728"/><rect class="dgm-box" x="463.0" y="10" width="124" height="38" rx="6" style="stroke:var(--accent)" stroke-width="2"/><text class="dgm-title" x="525.0" y="33.0" text-anchor="middle">Worker</text><line class="dgm-life" x1="525.0" y1="48" x2="525.0" y2="728"/><rect class="dgm-box" x="613.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="675.0" y="33.0" text-anchor="middle">accounts</text><line class="dgm-life" x1="675.0" y1="48" x2="675.0" y2="728"/><rect class="dgm-box" x="763.0" y="10" width="124" height="38" rx="6"/><text class="dgm-title" x="825.0" y="33.0" text-anchor="middle">Deliveries</text><line class="dgm-life" x1="825.0" y1="48" x2="825.0" y2="728"/><polyline class="dgm-line" points="75.0,92 223.0,92" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="150.0" y="85" text-anchor="middle">1  POST …/imports</text><polyline class="dgm-line" points="225.0,122 251.0,122 251.0,138 228.0,138" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="259.0" y="134" text-anchor="start">2  validate shape</text><polyline class="dgm-line" points="225.0,176 373.0,176" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="300.0" y="169" text-anchor="middle">3  store file + run 1; then enqueue</text><polyline class="dgm-line" points="225.0,218 77.0,218" marker-end="url(#arr-seqcsv)" stroke-dasharray="5 4"/><text class="dgm-label" x="150.0" y="211" text-anchor="middle">4  202 { importId }</text><polyline class="dgm-line" points="375.0,260 523.0,260" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="450.0" y="253" text-anchor="middle">5  deliver job · read file</text><rect class="dgm-frame dgm-loop" x="12" y="294" width="876" height="152" rx="6"/><text class="dgm-frame-label" x="22" y="308" text-anchor="start">loop · one chunk of 1,000 distinct ids · repeats until the file is exhausted</text><polyline class="dgm-line" points="525.0,336 673.0,336" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="600.0" y="329" text-anchor="middle">6  which of these ids exist?</text><polyline class="dgm-line" points="525.0,378 823.0,378" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="675.0" y="371" text-anchor="middle">7  insert · due_at = liveDate</text><polyline class="dgm-line" points="525.0,408 551.0,408 551.0,424 528.0,424" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="559.0" y="420" text-anchor="start">8  collect unknown ids · heartbeat</text><polyline class="dgm-line" points="525.0,474 377.0,474" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="450.0" y="467" text-anchor="middle">9  counters + row errors · run completed</text><polyline class="dgm-line" points="75.0,516 223.0,516" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="150.0" y="509" text-anchor="middle">10  GET …/imports/:id</text><rect class="dgm-frame" x="12" y="550" width="876" height="68" rx="6"/><text class="dgm-frame-label" x="22" y="564" text-anchor="start">due-send · every 60 s</text><polyline class="dgm-line" points="525.0,592 823.0,592" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="675.0" y="585" text-anchor="middle">11  SET sent_at = now once due_at ≤ now</text><rect class="dgm-frame" x="12" y="638" width="876" height="68" rx="6"/><text class="dgm-frame-label" x="22" y="652" text-anchor="start">only if a run ends failed — a new run repeats steps 5–9 on the same file; delivered accounts are skipped</text><polyline class="dgm-line" points="75.0,680 223.0,680" marker-end="url(#arr-seqcsv)"/><text class="dgm-label" x="150.0" y="673" text-anchor="middle">12  POST …/imports/:id/runs</text></svg></div>
+    <figcaption><b>Figure 5 — Upload now, validate and schedule in the background, send at <code>liveDate</code>.</b> The request path checks only the file's shape and records run 1. The worker then works through the distinct ids in chunks of 1,000 (dashed box): check which exist, insert deliveries for those, keep the rest for the report. If a run fails, the admin creates a new run (step 12) and the worker repeats steps 5–9 on the same file; accounts already delivered to are skipped.</figcaption>
+  </figure>
+  <ol>
+    <li>The admin uploads the notification fields and the CSV.</li>
+    <li>The API stream-parses the file: header, integer rows, size and row caps. Any violation → <code>400</code>, nothing stored.</li>
+    <li>One transaction inserts the csv notification (<code>active = TRUE</code>), the <code>imports</code> row (<code>total_rows</code> set), run 1 in <code>import_runs</code>, and the <code>import_files</code> row; after it commits the API enqueues <code>process_import { importId, runId }</code>. If that enqueue fails the request still returns 202; housekeeping re-enqueues imports left in <code>processing</code> (§8.3).</li>
+    <li>The API responds <code>202</code> with the import's <code>id</code>.</li>
+    <li>The queue delivers the job to a worker, which reads the file.</li>
+    <li>It de-duplicates ids in memory, then checks existence against <code>accounts</code> in chunks of 1,000.</li>
+    <li>Existing ids get a delivery (<code>due_at = live_date</code>, <code>dedupe_key = 'import'</code>; already live if <code>live_date ≤ now</code>).</li>
+    <li>Unknown ids are collected as the chunks go by (and the job heartbeats between chunks).</li>
+    <li>At the end, one transaction writes every error row and the counters, sets <code>completed</code>, and deletes the file row.</li>
+    <li>The admin polls the import resource for status and the report.</li>
+    <li>At <code>liveDate</code>, due-send makes the deliveries live.</li>
+    <li>Only if a run ended <code>failed</code>: the admin creates a new run, and steps 5–9 repeat on the same file.</li>
+  </ol>
+
+  <h3>7.4 Deactivate and remove</h3>
+  <p>The request only changes the notification row, so it returns immediately however many deliveries are waiting.
+  In <code>updateNotification.ts</code>:</p>
+  <div class="scroll"><pre><code>BEGIN;
+SELECT * FROM notifications WHERE id = :id FOR UPDATE NOWAIT;   -- lock busy → 409; no row → 404; removed → 409
+-- deactivate:
+UPDATE notifications SET active = FALSE, cancelled_before = :now WHERE id = :id;
+-- remove:
+UPDATE notifications SET removed = TRUE, active = FALSE, cancelled_before = :now WHERE id = :id;
+COMMIT;
+-- after commit: queue.enqueue('cancel_scheduled', { notificationId })</code></pre></div>
+  <p><strong>Cancellation is enforced where deliveries are released, not by the request.</strong> The due-send job
+  (§8.3) refuses to release a scheduled delivery, and deletes it instead, when any of these holds for its
+  notification:</p>
+  <ul>
+    <li>it is removed;</li>
+    <li>it is inactive;</li>
+    <li>the delivery was created at or before <code>cancelled_before</code> — this is what keeps a delivery cancelled
+      even if the notification has since been reactivated (B5).</li>
+  </ul>
+  <p>This closes the race where a job that had already read the notification as active inserts a scheduled delivery
+  just after the deactivation commits: the row exists, but it can never be released.</p>
+  <p>The <code>cancel_scheduled</code> job is only tidying: it deletes the same rows in chunks of 5,000 so they do not
+  sit in the table until their <code>due_at</code>. If that enqueue is lost, housekeeping runs the same cleanup within five minutes.
+  Jobs already in flight also stop on their own: <code>fanout_filter</code> re-checks between pages,
+  <code>event_delivery</code> only considers active notifications, and <code>process_import</code> re-checks
+  <code>removed</code> between chunks.</p>
+
+  <h3>7.5 Member reads</h3>
+  <p>One query shape, in <code>member/visibility.ts</code>, backs all three member operations. It <em>is</em> rule B1:</p>
+  <div class="scroll"><pre><code>SELECT d.id, d.public_id, d.notification_id, d.is_clicked, d.sent_at
+FROM notification_deliveries d
+JOIN notifications n ON n.id = d.notification_id
+WHERE d.account_id = :caller                      -- ownership (B14)
+  AND d.sent_at IS NOT NULL                       -- live, not scheduled
+  AND d.sent_at >= :windowStart                   -- first instant of the previous UTC month (B2)
+  AND n.removed = FALSE                           -- not removed (B6)
+
+-- list variant appends:
+  AND (d.sent_at, d.public_id) &lt; (:cursorSentAt, :cursorPublicId)   -- only when a cursor is given
+ORDER BY d.sent_at DESC, d.public_id DESC         -- B3; public_id is the stable tie-break
+LIMIT :limit + 1                                  -- the extra row signals another page
+
+-- detail and clicked variants append instead:
+  AND d.public_id = :id                           -- zero rows → 404</code></pre></div>
+  <ul>
+    <li><strong>Cursor.</strong> <code>base64url(JSON.stringify({ s: sentAtIso, p: publicId }))</code> of the last returned item. It is built from <code>public_id</code>, never the internal id, so decoding a cursor reveals nothing a member does not already have.</li>
+    <li><strong>Content.</strong> Headline, subheadline, image key, and link path are selected in the same query from the joined <code>notifications</code> row, then URLs are composed. There is no cache: the join is already there to check <code>removed</code>, so returning four more columns costs nothing.</li>
+    <li><strong>Clicked (PATCH).</strong> Run the query with <code>public_id = :id</code>; zero rows → <code>404</code>; else <code>UPDATE notification_deliveries SET is_clicked = TRUE WHERE id = :internalId AND is_clicked = FALSE</code> and return the delivery with <code>isClicked: true</code> regardless of rows changed.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="s8">
+  <h2><span class="n">8</span>Background work and failure handling</h2>
+
+  <h3>8.1 Queue: the contract, and the temporary implementation</h3>
+  <p><strong>What the rest of the system relies on.</strong> Producers and handlers see only the <code>Queue</code>
+  interface (§6.3) and assume exactly this, which any real queue provides:</p>
+  <ul>
+    <li><strong>At-least-once delivery.</strong> A job may arrive twice or concurrently with itself. This is safe because every delivery insert skips a repeat of <code>uq_delivery_dedupe</code> (B17, §5.3) and every handler recomputes its outputs from scratch.</li>
+    <li><strong>No ordering</strong> and <strong>no transactional enqueue.</strong> An enqueue is a separate step after the database commit. Each producer therefore has a recovery path if that step is lost: rescan for fan-outs, housekeeping for imports (§8.3). A lost event job is the one unrecovered case (§13.3).</li>
+    <li><strong>Retry, then dead-letter.</strong> A throwing handler is retried with backoff; after the last attempt <code>onDead</code> runs once (it marks an import <code>failed</code> and raises the dead-job alarm).</li>
+    <li><strong>Leases.</strong> Long handlers (fan-out, import) call <code>ctx.heartbeat()</code> after every page.</li>
+    <li><strong>Delayed delivery</strong> via <code>runAt</code>, used only for retry backoff.</li>
+  </ul>
+  <p><strong>What ships now: <code>dbQueue.ts</code>, a stand-in.</strong> It implements the interface on the
+  <code>jobs</code> table so the whole system can be run and demonstrated without the company queue. It is deliberately
+  simple and will not scale — polling and row locks on one table — and is expected to be replaced, not tuned:</p>
+  <div class="scroll"><pre><code>-- claim: each worker polls every second while idle, up to 10 jobs
+BEGIN;
+SELECT id FROM jobs
+ WHERE status = 'queued' AND run_at &lt;= UTC_TIMESTAMP()
+ ORDER BY run_at, id LIMIT 10
+ FOR UPDATE SKIP LOCKED;
+UPDATE jobs SET status = 'running', locked_by = :workerId, locked_at = UTC_TIMESTAMP(),
+                attempts = attempts + 1
+ WHERE id IN (:ids);
+COMMIT;</code></pre></div>
+  <ul>
+    <li>Success → <code>done</code>. Handler throws → <code>queued</code> with <code>run_at = now + 2^attempts minutes</code> and <code>last_error</code>; fifth failure → <code>dead</code>, then <code>onDead</code>.</li>
+    <li><code>heartbeat()</code> refreshes <code>locked_at</code>. The stand-in's own <code>consume()</code> loop also does its upkeep once a minute: re-queues <code>running</code> jobs with <code>locked_at</code> older than <code>JOB_LEASE_MINUTES</code>, and deletes <code>done</code> rows older than 7 days.</li>
+    <li>It deletes its own <code>done</code> rows older than 7 days; <code>dead</code> rows are kept for inspection and purged by housekeeping after 30 days.</li>
+  </ul>
+  <p><strong>Replacing it</strong> means adding one adapter file that implements <code>Queue</code> against the real
+  system, selecting it in <code>worker.ts</code> / <code>api.ts</code>, and dropping the <code>jobs</code> migration.
+  The queue contract tests (§10.2) run against whichever implementation is configured.</p>
+
+  <h3>8.2 Job handlers</h3>
+  <div class="scroll"><table>
+    <tr><th>Type · payload</th><th>Enqueued by</th><th>Handler</th></tr>
+    <tr><td class="nw"><code>fanout_filter</code><br><code>{ notificationId }</code></td><td>create-active, activation, rescan</td>
+      <td>Exit if the notification is missing, inactive, removed, or not a filter. Record <code>jobMonth = monthKey(clock.now())</code>. Loop, per page: take one instant <code>t = clock.now()</code>; <strong>if <code>monthKey(t) ≠ jobMonth</code>, stop</strong> (the month-start rescan covers everyone under the new month). Otherwise take the next id range, <code>a.id BETWEEN :lo AND :lo + 9999</code> (range-based batching: the query reads at most 10,000 account rows however few match), select the eligible accounts in it with <code>NOT EXISTS</code> a delivery for (notification, account, <code>jobMonth</code>); insert them with <code>sent_at = due_at = t</code> and <code>dedupe_key = jobMonth</code>, so the timestamp and the month key always come from the same instant; advance <code>lo</code> by 10,000; re-check active/removed; call <code>ctx.heartbeat()</code>. Ends when <code>lo</code> passes <code>MAX(accounts.id)</code>. An accounts-query error throws → normal retry <span class="ref">A39</span>.</td></tr>
+    <tr><td class="nw"><code>process_import</code><br><code>{ importId, runId }</code></td><td>import upload; <code>POST …/runs</code></td>
+      <td>Exit if the run is not <code>processing</code>. Before each chunk, if the notification is removed → status <code>failed</code>, delete the file, stop. Delete any <code>import_row_errors</code> from a previous attempt. Parse the file; build the ordered set of distinct ids (first-occurrence row numbers kept). In chunks of 1,000: look up existing account ids; insert deliveries for those; collect the rest as errors (the helper also reports any account deleted since the lookup). Finally, in one transaction: write every error row, <code>accepted</code> (the count of distinct ids found to exist — not the number of rows this attempt happened to insert), <code>duplicates_ignored</code>, <code>status = 'completed'</code> on both the run and the import, and delete the <code>import_files</code> row. If the job is dead-lettered, <code>onDead</code> marks the run and the import <code>failed</code> with a short <code>error</code>, keeps the file, and stops; an admin starts a new run (§3.4) to try again. The job touches <code>imports.updated_at</code> after every chunk as its progress heartbeat.</td></tr>
+    <tr><td class="nw"><code>event_delivery</code><br><code>{ type, accountId, occurredAt, occurrenceKey }</code></td><td><code>NotificationTrigger.record</code></td>
+      <td>Select notifications with <code>event_trigger = type AND active AND NOT removed</code>; none → done. Compute <code>due_at</code>: <code>occurredAt + delay days</code>, except for <code>preenrollAudiobook</code>, where <code>due_at = occurredAt</code> regardless of delay (the event is the publication, so the delivery is immediate). If the computed <code>due_at</code> is already before the visibility window start (an old event replayed), drop it and count a metric. Otherwise insert one delivery per notification with <code>occurrence_key = dedupe_key = occurrenceKey</code> and <code>sent_at = now</code> if <code>due_at ≤ now</code>, else <code>NULL</code>. An unknown <code>accountId</code> is reported by the insert helper; the job logs it and drops the event, with no retry.</td></tr>
+    <tr><td class="nw"><code>cancel_scheduled</code><br><code>{ notificationId }</code></td><td>admin PATCH deactivate / remove; housekeeping</td>
+      <td>Repeat until none remain: delete up to 5,000 rows with <code>notification_id = :id AND sent_at IS NULL</code> that are cancelled under the §7.4 rule, heartbeating between chunks. Purely cleanup — correctness does not depend on it running.</td></tr>
+    <tr><td class="nw"><code>account_recheck</code><br><code>{ accountId }</code></td><td><code>NotificationTrigger.accountChanged</code></td>
+      <td>For each notification with type filter, active, not removed: run the eligibility query restricted to this account; if it matches, insert a live delivery with this month's dedupe key (a no-op if one exists). Cost is one small indexed query per active filter notification. Unknown account → done. The same function is called at the end of <code>event_delivery</code> for that event's account.</td></tr>
+  </table></div>
+
+  <h3>8.3 Scheduled jobs</h3>
+  <p><strong>Why scheduled sends are rows rather than delayed queue jobs:</strong> a row can be cancelled when the
+  notification is deactivated or removed (§7.4); a message already sitting in a queue with a delay cannot be. The queue is therefore never asked to hold a
+  delay longer than a retry backoff.</p>
+  <p><strong>Due-send runs on every worker</strong>: its <code>FOR UPDATE SKIP LOCKED</code> selection already lets
+  several workers release different batches at once, which is what keeps a million deliveries falling due together from
+  taking minutes on one process. The other three jobs run on <strong>one worker at a time</strong>: it holds
+  <code>GET_LOCK('notification_center_scheduler', 0)</code> on a dedicated connection and runs their timers; if that
+  worker dies the lock releases and another takes over on its next attempt (every 30 s). Each run records start,
+  completion, and status in <code>scheduled_runs</code>.</p>
+  <div class="scroll"><table>
+    <tr><th>Job</th><th>Cadence (config)</th><th>Does</th></tr>
+    <tr><td class="nw"><b>Due-send</b></td><td class="nw">every 60 s, every worker</td>
+      <td>Repeat until a pass handles fewer than 1,000 rows: in one transaction, select up to 1,000 rows with <code>sent_at IS NULL AND due_at &lt;= now</code> <code>FOR UPDATE SKIP LOCKED</code>, joined to their notification. <strong>Delete, do not send,</strong> any row whose notification is removed or inactive, or whose <code>created_at &lt;= cancelled_before</code> (§7.4). Set <code>sent_at = now</code> on the rest. <code>sent_at</code> is the real go-live instant, which is what the member's relative timestamp is measured from (B15).</td></tr>
+    <tr><td class="nw"><b>Rescan</b></td><td class="nw">daily 06:00 UTC, plus 00:05 UTC on the 1st</td>
+      <td>For each notification with type filter, active, not removed: enqueue <code>fanout_filter</code>. The worker runs at most <code>FANOUT_MAX_CONCURRENT</code> (2) fan-out jobs at a time, so a month-start burst of many notifications proceeds two at a time rather than all at once; total time is the same, load is bounded. A duplicate job is harmless: the second finds nothing left to insert. The first-of-month run is what produces the monthly resend (B8). It is also the safety net for account changes that business code did not report (§7.2): for those, the cadence is the worst-case wait (§14 item 15).</td></tr>
+    <tr><td class="nw"><b>Expiry</b></td><td class="nw">daily 01:00 UTC</td>
+      <td>Archives up to <code>EXPIRY_DAILY_ROW_BUDGET</code> rows per run, in transactions of 10,000: select the ids of deliveries with <code>sent_at &lt; windowStart(now)</code> ordered by <code>sent_at, id</code>, copy those ids into the archive, delete those ids. Running daily with a budget spreads the month's expired rows over several days instead of one large move at month start. Purely maintenance — the window predicate in §7.5 already hides these rows, so a late or failed run never shows an expired notification.</td></tr>
+    <tr><td class="nw"><b>Housekeeping</b></td><td class="nw">every 5 min</td>
+      <td>Cheap indexed checks; a quiet run touches a few rows. Enqueue <code>fanout_filter</code> for any active filter notification with no delivery row this month (covers a lost activation enqueue). Delete, in chunks, scheduled deliveries that are cancelled under the §7.4 rule (covers a lost <code>cancel_scheduled</code> job). Re-enqueue <code>process_import</code> for the current run of any import still <code>processing</code> whose <code>updated_at</code> is more than 10 minutes old — no progress, rather than age, so a long but healthy import is left alone (covers a lost enqueue; the handler is idempotent). Delete <code>import_files</code> rows of imports that have been <code>failed</code> for more than 30 days. Purge dead jobs older than <code>DEAD_JOB_RETENTION_DAYS</code>.</td></tr>
+  </table></div>
+
+  <h3>8.4 Failure handling per dependency</h3>
+  <div class="scroll"><table>
+    <tr><th>Dependency</th><th>Failure</th><th>Behavior</th></tr>
+    <tr><td class="nw">Job queue</td><td>Enqueue fails or the queue is down</td><td>Admin requests still succeed and log the failure; rescan and housekeeping re-enqueue. Triggers swallow and count it. Workers reconnect with backoff.</td></tr>
+    <tr><td class="nw">accounts table</td><td>Eligibility or existence query fails</td><td>The job throws and retries with backoff; rescan re-enqueues on its next run regardless. Nothing is lost or duplicated because selection is "eligible and no row this month" <span class="ref">A39</span>.</td></tr>
+    <tr><td class="nw">Business call sites</td><td>Enqueue fails inside <code>record()</code></td><td>Swallowed; logged with <code>occurrenceKey</code>; <code>trigger_enqueue_failed</code> metric and alarm. The business action is unaffected (B11).</td></tr>
+    <tr><td class="nw">Session / role system</td><td>Cannot answer</td><td>Fail closed with <code>503</code>. Never treated as "not admin" (that would be <code>403</code>) and never as "allowed".</td></tr>
+    <tr><td class="nw">Aurora</td><td>Unreachable</td><td>API returns <code>503</code>. Worker loops back off and resume; every job and scheduled run is idempotent, so skipped ticks need no compensation.</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s9">
+  <h2><span class="n">9</span>Cross-cutting concerns</h2>
+
+  <h3>9.1 Middleware order</h3>
+  <div class="scroll"><pre><code>requestContext   → assigns requestId (UUID), child logger, start time; sets X-Request-Id
+errorMapper      → try/catch around everything below; renders the §3.2 envelope
+auth             → AuthProvider.getSession → ctx.state.accountId, or 401
+rateLimit        → per account, per surface; 429
+router
+  /admin/*       → requireAdmin (403 / 503) → [idempotencyKey on the three POSTs] → validate → handler
+  /notifications → validate → handler</code></pre></div>
+  <p><code>/healthz</code> and <code>/readyz</code> are mounted before <code>auth</code>.</p>
+  <p><strong>Stand-in authentication</strong> (<code>AUTH_IMPL=header</code>): <code>HeaderAuthProvider</code> reads the
+  caller from the <code>X-Account-Id</code> request header — absent or non-numeric → no session (401). It answers
+  <code>isAdmin</code> by membership in the <code>ADMIN_ACCOUNT_IDS</code> setting, so the same request can be made as a
+  plain member (403 on <code>/admin</code>) or as an admin just by choosing the id. It does not check that the account
+  exists. The process refuses to start with <code>AUTH_IMPL=header</code> in production. The real provider implements
+  the same interface and is selected by the same setting.</p>
+
+  <h3>9.2 Validation</h3>
+  <p>Member-route <code>:id</code> parameters are not validated for shape: any string is looked up, and anything not
+  found is the standard <code>404</code>, so a malformed id is indistinguishable from an unknown one (B14). Admin
+  <code>:id</code> parameters must be positive integers (else <code>400</code>).</p>
+  <p>Each endpoint has zod schemas for params, query, and body in <code>schemas.ts</code>. All object schemas are
+  <code>.strict()</code>. A failed parse throws <code>AppError('VALIDATION_ERROR', 400, firstIssueMessage)</code>.
+  Handlers only ever see parsed, typed input. Filter arrays are de-duplicated after parsing; empty arrays are treated
+  as omitted.</p>
+
+  <h3>9.3 Error mapping</h3>
+  <div class="scroll"><table>
+    <tr><th>Thrown / detected</th><th>Response</th></tr>
+    <tr><td><code>AppError(code, status, message?)</code></td><td>that status, <code>{ error: code, message }</code></td></tr>
+    <tr><td>zod error</td><td>400 <code>VALIDATION_ERROR</code></td></tr>
+    <tr><td>multer limit error, malformed multipart, malformed JSON</td><td>400 <code>VALIDATION_ERROR</code></td></tr>
+    <tr><td>MySQL lock-not-available on the admin PATCH's <code>NOWAIT</code></td><td>409 <code>CONFLICT</code></td></tr>
+    <tr><td>Connection / pool-timeout errors; <code>AuthProvider</code> throwing</td><td>503 <code>UNAVAILABLE</code></td></tr>
+    <tr><td>Anything else</td><td>500 <code>INTERNAL</code>; logged with stack; no detail in the body</td></tr>
+  </table></div>
+
+  <h3>9.4 Idempotent creates</h3>
+  <p>A key is remembered together with the endpoint it was used on and a SHA-256 of the request body (for the import, the
+  JSON part plus the file). The handler attempts its insert with <code>request_key</code>, <code>request_endpoint</code>
+  and <code>request_hash</code> set. On a duplicate-key error for <code>uq_notifications_request_key</code> or
+  <code>uq_imports_request_key</code> it loads the existing row and: if endpoint and hash match, returns that resource's
+  <em>current</em> representation with the endpoint's success status (a genuine retry); if either differs, returns
+  <code>400 VALIDATION_ERROR</code> "Idempotency-Key already used for a different request". The unique column is the
+  ledger; there is no separate keys table.</p>
+
+  <h3>9.5 Logging</h3>
+  <p>pino, JSON to stdout. One line per request: <code>requestId</code>, method, route template, status, duration,
+  <code>accountId</code>. One line per job attempt: <code>jobId</code>, type, attempt, outcome, duration, rows written.
+  The <code>requestId</code> that enqueued a job is copied into its payload so a fan-out can be traced end to end.
+  Notification content, CSV contents, and session tokens are never logged.</p>
+
+  <h3>9.6 Configuration and secrets</h3>
+  <div class="scroll"><table>
+    <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+    <tr><td><code>DATABASE_URL</code></td><td>—</td><td>Aurora writer endpoint (secret)</td></tr>
+    <tr><td><code>DATABASE_READER_URL</code></td><td>= writer</td><td>Aurora reader endpoint; the rescan's eligibility reads use it (§8.3). Replica lag is safe: inserts de-duplicate</td></tr>
+    <tr><td><code>PORT</code></td><td class="num">3000</td><td>API listen port</td></tr>
+    <tr><td><code>ASSET_BASE_URL</code>, <code>SITE_BASE_URL</code></td><td>—</td><td>Base addresses prefixed to the stored <code>image</code> and <code>link</code> paths when building responses <span class="ref">A3</span>. Read through <code>lib/urls.ts</code> only, so the source can be switched to wherever the site keeps them.</td></tr>
+    <tr><td><code>RATE_LIMIT_MEMBER_PER_MIN</code></td><td class="num">120</td><td>§9.8</td></tr>
+    <tr><td><code>RATE_LIMIT_ADMIN_PER_MIN</code></td><td class="num">600</td><td>§9.8</td></tr>
+    <tr><td><code>CSV_MAX_BYTES</code>, <code>CSV_MAX_ROWS</code></td><td class="num">10485760, 1000000</td><td>Upload caps</td></tr>
+    <tr><td><code>DUE_SEND_INTERVAL_SECONDS</code></td><td class="num">60</td><td>§8.3</td></tr>
+    <tr><td><code>RESCAN_CRON</code></td><td><code>0 6 * * *</code></td><td>Daily rescan (the month-start run is fixed)</td></tr>
+    <tr><td><code>FANOUT_BATCH_SIZE</code></td><td class="num">1000</td><td>Rows per insert page</td></tr>
+    <tr><td><code>BUSINESS_TIMEZONE</code></td><td><code>America/New_York</code></td><td>Interprets date-only inputs (§3.1)</td></tr>
+    <tr><td><code>QUEUE_IMPL</code></td><td><code>db</code></td><td><code>db</code> (stand-in) or the real queue's adapter name</td></tr>
+    <tr><td><code>AUTH_IMPL</code></td><td><code>header</code></td><td><code>header</code> (stand-in, refused in production) or the real provider's name (§9.1)</td></tr>
+    <tr><td><code>ADMIN_ACCOUNT_IDS</code></td><td><code>1,2,3</code></td><td>Header stand-in only: which account ids are admins</td></tr>
+    <tr><td><code>STANDINS</code></td><td><code>false</code></td><td><code>true</code> creates and seeds the stand-in <code>accounts</code> table (§5.9); refused in production</td></tr>
+    <tr><td><code>QUEUE_POLL_SECONDS</code></td><td class="num">1</td><td>Stand-in poll interval</td></tr>
+    <tr><td><code>JOB_MAX_ATTEMPTS</code></td><td class="num">5</td><td>Before a job is dead-lettered</td></tr>
+    <tr><td><code>JOB_LEASE_MINUTES</code></td><td class="num">15</td><td>Stand-in: stale <code>running</code> jobs are re-queued after this</td></tr>
+    <tr><td><code>FANOUT_MAX_CONCURRENT</code></td><td class="num">2</td><td>Fan-out jobs running at once (§8.3)</td></tr>
+    <tr><td><code>DUE_SEND_BATCH</code>, <code>IMPORT_CHUNK</code>, <code>EXPIRY_BATCH</code></td><td class="num">1000, 1000, 10000</td><td>Rows per transaction</td></tr>
+    <tr><td><code>EXPIRY_DAILY_ROW_BUDGET</code></td><td class="num">2000000</td><td>Max rows archived per daily run (§8.3)</td></tr>
+    <tr><td><code>HOUSEKEEPING_CRON</code>, <code>EXPIRY_CRON</code></td><td><code>*/5 * * * *</code>, <code>0 1 * * *</code></td><td>§8.3</td></tr>
+    <tr><td><code>DEAD_JOB_RETENTION_DAYS</code></td><td class="num">30</td><td>Dead jobs are purged after this</td></tr>
+    <tr><td><code>WORKER_HEALTH_PORT</code></td><td class="num">3001</td><td>Worker health endpoints</td></tr>
+    <tr><td><code>LOG_LEVEL</code></td><td><code>info</code></td><td></td></tr>
+  </table></div>
+  <p>Page size (25) is a constant, not configuration — it is part of the API contract. Secrets come from AWS Secrets
+  Manager, injected as environment at deploy; nothing secret lives in the repository or the image.</p>
+
+  <h3>9.7 No response caching; how remove propagates</h3>
+  <p>The service caches nothing. Every member request evaluates ownership, sent state, window, and <code>removed</code>
+  in SQL (§7.5) and reads the notification text in the same query. A remove therefore takes effect for every member on
+  their very next request, on every instance, with nothing to invalidate. This is how "removed propagates immediately"
+  <span class="ref">A36</span> is met. The architecture's suggestion of response caching with purge-on-remove was
+  judged not worth its complexity for this read path (see §14.4).</p>
+
+  <h3>9.8 Rate limiting and upload caps</h3>
+  <p>A fixed one-minute window counter per <code>(surface, accountId)</code>, held in memory per instance: 120
+  requests/min on member routes, 600 on admin routes; excess → <code>429 RATE_LIMITED</code> with a
+  <code>Retry-After</code> header. The numbers are starting points <span class="ref">A33</span>.</p>
+  <p class="alt"><b>Close second:</b> a Redis sliding window — exact across instances, one more datastore. Per-instance
+  counting is acceptable for a coarse abuse guard.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s10">
+  <h2><span class="n">10</span>Testing strategy</h2>
+
+  <p>Three layers, each answering a different question. Everything is deterministic: time comes from the injected
+  <code>Clock</code>, and jobs run only when a test says so.</p>
+  <div class="scroll"><table>
+    <tr><th>Layer</th><th>Question it answers</th><th>What is real</th><th>What is replaced</th></tr>
+    <tr><td class="nw"><b>Unit</b></td><td>Is the business logic right, on its own? Window and month maths, eligibility SQL built from a filter object, path and sanitizer rules, the trigger's never-throw promise, request validation.</td><td>The function or class under test.</td><td>Everything it depends on, via dependency injection: <code>FakeQueue</code>, a fixed clock, no database, no HTTP.</td></tr>
+    <tr><td class="nw"><b>Integration</b></td><td>Does our code behave correctly at its boundaries with real infrastructure? Do the queries, inserts, locks and job handlers do what the design says against a real MySQL and the real stand-in queue — especially the guarantees that live in the database: no duplicate deliveries, cancelled rows never send, month-boundary behaviour.</td><td>MySQL (migrated, seeded), the stand-in queue, the job handlers, the insert helper.</td><td>HTTP and authentication (handlers are called directly); the clock.</td></tr>
+    <tr><td class="nw"><b>End-to-end</b></td><td>Does the whole system do what the admin site and member app will see? Every endpoint's contract, and the full flows from an admin's request, through the worker, to a member's list.</td><td>The Koa app, middleware, auth stand-in, MySQL, queue, worker loop.</td><td>Only the clock, so flows that wait on time can be driven; and the external systems, by their stand-ins.</td></tr>
+  </table></div>
+  <figure>
+    <div class="scroll"><svg class="dgm" viewBox="0 0 900 250" role="img" aria-label="Test layers: unit tests run the code under test with every dependency faked; integration tests use real MySQL and the stand-in queue but call handlers directly; end-to-end tests run everything over HTTP, replacing only the clock." xmlns="http://www.w3.org/2000/svg"><defs><marker id="arr-test" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs><text class="dgm-title" x="202.0" y="40" text-anchor="middle">Code under test</text><text class="dgm-title" x="306.0" y="40" text-anchor="middle">Koa app + HTTP</text><text class="dgm-title" x="410.0" y="40" text-anchor="middle">Job handlers</text><text class="dgm-title" x="514.0" y="40" text-anchor="middle">MySQL</text><text class="dgm-title" x="618.0" y="40" text-anchor="middle">Queue</text><text class="dgm-title" x="722.0" y="40" text-anchor="middle">Auth</text><text class="dgm-title" x="826.0" y="40" text-anchor="middle">Clock</text><text class="dgm-title" x="20" y="93.0" text-anchor="start">Unit</text><rect class="dgm-box dgm-soft" x="156" y="68" width="92" height="42" rx="6"/><text class="dgm-label" x="202.0" y="89.0" text-anchor="middle">real</text><text class="dgm-sub" x="306.0" y="93.0" text-anchor="middle">—</text><text class="dgm-sub" x="410.0" y="93.0" text-anchor="middle">—</text><text class="dgm-sub" x="514.0" y="93.0" text-anchor="middle">—</text><rect class="dgm-box" x="572" y="68" width="92" height="42" rx="6" stroke-dasharray="5 4"/><text class="dgm-label" x="618.0" y="89.0" text-anchor="middle">FakeQueue</text><text class="dgm-sub" x="722.0" y="93.0" text-anchor="middle">—</text><rect class="dgm-box" x="780" y="68" width="92" height="42" rx="6" stroke-dasharray="5 4"/><text class="dgm-label" x="826.0" y="89.0" text-anchor="middle">fixed</text><text class="dgm-title" x="20" y="147.0" text-anchor="start">Integration</text><rect class="dgm-box dgm-soft" x="156" y="122" width="92" height="42" rx="6"/><text class="dgm-label" x="202.0" y="143.0" text-anchor="middle">real</text><text class="dgm-sub" x="306.0" y="147.0" text-anchor="middle">—</text><rect class="dgm-box dgm-soft" x="364" y="122" width="92" height="42" rx="6"/><text class="dgm-label" x="410.0" y="139.0" text-anchor="middle">real</text><text class="dgm-sub" x="410.0" y="155.0" text-anchor="middle">called directly</text><rect class="dgm-box dgm-soft" x="468" y="122" width="92" height="42" rx="6"/><text class="dgm-label" x="514.0" y="139.0" text-anchor="middle">real</text><text class="dgm-sub" x="514.0" y="155.0" text-anchor="middle">seeded</text><rect class="dgm-box dgm-soft" x="572" y="122" width="92" height="42" rx="6"/><text class="dgm-label" x="618.0" y="143.0" text-anchor="middle">stand-in (real)</text><text class="dgm-sub" x="722.0" y="147.0" text-anchor="middle">—</text><rect class="dgm-box" x="780" y="122" width="92" height="42" rx="6" stroke-dasharray="5 4"/><text class="dgm-label" x="826.0" y="143.0" text-anchor="middle">fixed</text><text class="dgm-title" x="20" y="201.0" text-anchor="start">End-to-end</text><rect class="dgm-box dgm-soft" x="156" y="176" width="92" height="42" rx="6"/><text class="dgm-label" x="202.0" y="197.0" text-anchor="middle">real</text><rect class="dgm-box dgm-soft" x="260" y="176" width="92" height="42" rx="6"/><text class="dgm-label" x="306.0" y="197.0" text-anchor="middle">real</text><rect class="dgm-box dgm-soft" x="364" y="176" width="92" height="42" rx="6"/><text class="dgm-label" x="410.0" y="193.0" text-anchor="middle">real</text><text class="dgm-sub" x="410.0" y="209.0" text-anchor="middle">worker loop</text><rect class="dgm-box dgm-soft" x="468" y="176" width="92" height="42" rx="6"/><text class="dgm-label" x="514.0" y="193.0" text-anchor="middle">real</text><text class="dgm-sub" x="514.0" y="209.0" text-anchor="middle">seeded</text><rect class="dgm-box dgm-soft" x="572" y="176" width="92" height="42" rx="6"/><text class="dgm-label" x="618.0" y="197.0" text-anchor="middle">stand-in (real)</text><rect class="dgm-box" x="676" y="176" width="92" height="42" rx="6" stroke-dasharray="5 4"/><text class="dgm-label" x="722.0" y="193.0" text-anchor="middle">stand-in</text><text class="dgm-sub" x="722.0" y="209.0" text-anchor="middle">header</text><rect class="dgm-box" x="780" y="176" width="92" height="42" rx="6" stroke-dasharray="5 4"/><text class="dgm-label" x="826.0" y="197.0" text-anchor="middle">fixed</text><text class="dgm-sub" x="20" y="236" text-anchor="start">solid = the real thing · dashed = replaced for the test · — = not involved</text></svg></div>
+    <figcaption><b>Figure 6 — What each test layer runs for real.</b> Moving down the rows, fewer things are replaced.
+    Only the clock is faked at every layer, so tests can move time deliberately; the external systems appear as their
+    stand-ins, which are real code running against real MySQL.</figcaption>
+  </figure>
+  <p>A defect found by an end-to-end test should usually be reproducible by a smaller test one layer down; when it
+  is not, that is a sign a unit or integration test is missing.</p>
+
+  <h3>10.1 Unit tests</h3>
+  <p>Pure functions and single classes, no database and no HTTP. Fast; run on every save.</p>
+  <ul>
+    <li><strong><code>NotificationTrigger</code>:</strong> with a <code>FakeQueue</code>, <code>record()</code> and <code>accountChanged()</code> each enqueue exactly one job with the right payload; with a queue whose enqueue rejects, both resolve without throwing and count the failure.</li>
+    <li><strong>Zod request schemas:</strong> each endpoint's schema accepts its valid shapes and rejects each invalid one (missing field, unknown key, bad enum, invalid path, past <code>liveDate</code>).</li>
+    <li><strong>Time math:</strong> <code>windowStart</code> and <code>monthKey</code> at month and year boundaries — sent <code>2026-08-31T23:59:59Z</code> is out of window at <code>2026-10-01T00:00:00Z</code>; sent <code>2026-09-01T00:00:00Z</code> is still in.</li>
+    <li><strong>Eligibility builder:</strong> each filter alone, all combined, none (matches everyone), inclusive credit bounds at both edges, value mapping.</li>
+    <li><strong>Path handling:</strong> valid path kept and composed into a full URL on output; rejected: any full URL, <code>//evil.com/x</code>, <code>/\\evil.com</code>, a query string or fragment, <code>..</code> segments, whitespace and control characters, a missing leading slash.</li>
+    <li><strong>Cursor codec</strong> round trip and rejection of garbage; <strong>public id</strong> format.</li>
+    <li><strong>Headline / subheadline sanitizer:</strong> trims; accepts ordinary punctuation and non-Latin text; rejects <code>&lt;script&gt;</code>, a lone <code>&lt;</code>, a line break, a direction-override character, an empty or whitespace-only value, and 256 characters.</li>
+    <li><strong>CSV shape validator:</strong> BOM, CRLF, trailing blank lines, bad header, non-integers, caps.</li>
+  </ul>
+
+  <h3>10.2 Integration tests</h3>
+  <p>Real MySQL (with the seeded stand-in accounts) and the real stand-in queue, but no HTTP: job handlers and scheduled jobs are called directly, and results are asserted in the database. These prove the background machinery.</p>
+  <ul>
+    <li><strong>Insert helper:</strong> a repeat is a no-op; a forced <code>public_id</code> clash is re-inserted with a new id and the delivery exists; an unknown account is returned, not swallowed; a missing required value raises.</li>
+    <li><strong>Idempotency:</strong> run <code>fanout_filter</code> twice → same row count; <code>record()</code> twice with one occurrence key → one delivery, with two keys → two; <code>process_import</code> twice → same deliveries and report; due-send twice → <code>sent_at</code> unchanged.</li>
+    <li><strong>Account change:</strong> an account that becomes eligible and calls <code>accountChanged</code> gets the delivery as soon as the job runs, with no rescan; calling it again adds nothing; an account that no longer matches gets nothing; an event for an account also triggers the check; <code>accountChanged</code> with a failing queue resolves without throwing.</li>
+    <li><strong>Filter:</strong> account becomes eligible after the first fan-out and is <em>not</em> reported → next rescan adds exactly that account; clock moved into the next month → everyone eligible gets a second delivery; deactivated mid-run → stops.</li>
+    <li><strong>Event:</strong> immediate; delayed (scheduled, then live after the clock advances and due-send runs); pre-enroll immediate even when the notification has a delay; inactive notification → nothing; two notifications on one event → two deliveries.</li>
+    <li><strong>Trigger safety:</strong> <code>record()</code> with a queue whose <code>enqueue</code> rejects resolves without throwing and increments the failure metric.</li>
+    <li><strong>CSV:</strong> duplicates and unknown ids → report matches; future <code>liveDate</code> → invisible until due-send after the clock passes it; removed before send → never appears.</li>
+    <li><strong>Cancellation:</strong> a scheduled delivery inserted just <em>after</em> a deactivation commits is deleted by due-send, not sent; deactivate then reactivate → deliveries scheduled before the deactivation still never send, ones created after reactivation do; <code>cancel_scheduled</code> removes the rows; with that job lost, housekeeping removes them.</li>
+    <li><strong>Expiry:</strong> out-of-window rows move to the archive byte-for-byte and leave the hot table; in-window rows stay.</li>
+    <li><strong>Queue contract</strong> (run against the configured implementation): an enqueued job reaches its handler; a throwing handler is retried; the final failure calls <code>onDead</code> once. <strong>Stand-in specifics:</strong> stale <code>running</code> jobs are re-queued; two concurrent claimers never take the same job.</li>
+    <li><strong>Trigger end to end inside the worker:</strong> <code>record()</code> → stand-in queue → <code>event_delivery</code> handler run once → delivery row exists with the expected <code>due_at</code>, <code>dedupe_key</code> and <code>sent_at</code>.</li>
+    <li><strong>Lost enqueue:</strong> with a queue that drops the enqueue, an activated filter notification is still sent by the next rescan, and a stuck import is picked up by housekeeping.</li>
+    <li>Most of these use <code>FakeQueue.runAll()</code> to run handlers on demand; the queue-contract tests and the "trigger end to end inside the worker" test use the real stand-in queue.</li>
+  </ul>
+
+  <h3>10.3 End-to-end tests</h3>
+  <p>The whole system as a client sees it: HTTP requests through the real Koa app, real MySQL with the seeded stand-in
+  accounts, the header auth stand-in, a fixed <code>Clock</code>, and the real stand-in queue with its worker loop run
+  between steps. Two kinds:</p>
+  <h4>Per-endpoint contract tests — one file per operation</h4>
+  <p>Each file sends real requests with <code>supertest</code> and asserts the exact response shape of §3 and every
+  listed case. These are the acceptance criteria for the API.</p>
+  <div class="scroll"><table>
+    <tr><th>Operation</th><th>Success cases</th><th>Error cases</th></tr>
+    <tr><td class="nw"><code>GET /admin/notifications</code></td><td>Envelope; newest first; cursor walks all pages without gaps or repeats; <code>type</code>, <code>createdFrom</code>, <code>createdTo</code> filters; includes removed, inactive, and old records; <code>activatedAt</code> null when never activated</td><td>400 bad limit / cursor / type / date; 401; 403</td></tr>
+    <tr><td class="nw"><code>GET /admin/notifications/:id</code></td><td>Detail per type (filters echo; event fields); URLs composed</td><td>401; 403; 404</td></tr>
+    <tr><td class="nw"><code>POST …/filter</code></td><td>201 with <code>isActive</code> true and with false; omitted and empty filters stored as "all"; valid paths accepted; active create enqueues one job; same key replays without a second row</td><td>400 each missing field (including <code>isActive</code>), bad enum value, min &gt; max, unknown key, each invalid path form (full URL, <code>//host</code>, backslash, query string, <code>..</code>), missing/invalid key header; 401; 403</td></tr>
+    <tr><td class="nw"><code>POST …/event</code></td><td>201; delay optional; each of the three triggers; replay</td><td>400 unknown trigger, delay out of range; 401; 403</td></tr>
+    <tr><td class="nw"><code>POST …/imports</code></td><td>202 with id; notification created active with <code>live_date</code>; file stored; job enqueued; replay returns same id</td><td>400 wrong header, non-integer row, empty file, over 10 MB, over row cap, missing part, bad <code>liveDate</code>, <code>liveDate</code> in the past (message checked); 401; 403 — and nothing persisted in each case</td></tr>
+    <tr><td class="nw"><code>GET …/imports/:id</code></td><td><code>processing</code> before the job; after it: counters, errors, and the totals invariant — including a file with several thousand unknown ids, and after the job is run twice</td><td>401; 403; 404</td></tr>
+    <tr><td class="nw"><code>PATCH /admin/notifications/:id</code></td><td>Every row of the outcome table in §3.4, including: the request returns without touching delivery rows; scheduled rows never send after deactivate or remove; live rows untouched; no-op repeat</td><td>400 (four body shapes; isActive on csv); 401; 403; 404; 409 already removed; 409 lock held</td></tr>
+    <tr><td class="nw"><code>GET /notifications</code></td><td>B1 matrix: live+in-window shown; scheduled, out-of-window, removed, other member's hidden; inactive-but-sent shown; order; cursor; no <code>image</code> key</td><td>400; 401</td></tr>
+    <tr><td class="nw"><code>GET /notifications/:id</code></td><td>Full shape; does not change <code>is_clicked</code></td><td>401; 404 for each of: unknown id, other member's, scheduled, removed, out of window — identical bodies</td></tr>
+    <tr><td class="nw"><code>PATCH /notifications/:id</code></td><td>200 with <code>isClicked: true</code>; flag set; second call 200, unchanged</td><td>401; 404 for the same five reasons</td></tr>
+  </table></div>
+
+  <h4>Scenario tests — several operations and jobs chained</h4>
+  <p>Each follows one notification from the admin's first request to what a member sees, running the worker between
+  steps and moving the clock where the flow waits on time.</p>
+  <ul>
+    <li><strong>Filter campaign:</strong> admin creates a filter notification active → worker runs the fan-out → the seeded accounts that match see it in <code>GET /notifications</code> and the ones that don't do not → one member calls <code>clicked</code> → their item shows <code>isClicked: true</code>, nobody else's changes → clock moves to next month, rescan runs → every matching member has a second, unclicked item → admin removes it → every member's list is empty of it on the next request.</li>
+    <li><strong>Account change:</strong> an account that did not match is updated (via the test helper) and <code>accountChanged</code> is called → worker runs → that one account now sees the notification; nobody else gains a row.</li>
+    <li><strong>Event with delay:</strong> admin creates a <code>shipped</code> notification with a 5-day delay, active → <code>record()</code> for account 7 → worker runs → account 7 sees nothing → clock moves 5 days, due-send runs → account 7 sees it with <code>liveDate</code> equal to the release time → <code>record()</code> again with the same occurrence key → still one item; with a new key → two items.</li>
+    <li><strong>Pre-order:</strong> a <code>preenrollAudiobook</code> notification with a delay → <code>record()</code> → the member sees it immediately; the delay is ignored.</li>
+    <li><strong>Deactivate while pending:</strong> delayed event, then admin sets <code>isActive: false</code> → clock moves past the delay, due-send runs → nothing appears; admin reactivates → still nothing for the old occurrence; a new occurrence after reactivation does appear.</li>
+    <li><strong>CSV import:</strong> admin uploads a file with duplicates and unknown ids, <code>liveDate</code> tomorrow → <code>202</code> → worker runs → <code>GET …/imports/:id</code> shows <code>completed</code> with reconciled counts → listed members see nothing yet → clock moves past <code>liveDate</code>, due-send runs → they see it → a past <code>liveDate</code> upload is rejected with the explained 400.</li>
+    <li><strong>Import failure and retry:</strong> make the import job fail on a chunk → <code>failed</code> report → <code>POST …/imports/:id/runs</code> → worker runs → <code>completed</code>, and no member has two rows.</li>
+    <li><strong>Visibility window:</strong> a delivery sent on the last second of a month is still visible the next month and gone the month after, checked through the member list as the clock moves.</li>
+    <li><strong>Authorization:</strong> a non-admin id gets 403 on every <code>/admin</code> route; a member gets the same 404 for another member's delivery id, an unsent id, a removed one, and a nonsense string.</li>
+  </ul>
+
+  <h3>10.4 Running tests</h3>
+  <ul>
+    <li><strong>Locally:</strong> <code>docker compose up -d mysql</code>, then <code>npm test</code> (typecheck → unit → integration → end-to-end; <code>npm run test:unit</code> runs the first layer alone, with no database). Test setup sets <code>STANDINS=true</code>, runs all migrations (including the stand-in <code>accounts</code> table) against a scratch database, and seeds the 72 fixed accounts (§5.9). Each test file truncates the owned tables; the seed is left in place.</li>
+    <li><strong>CI (GitHub Actions):</strong> the same <code>npm test</code> with a <code>mysql:8</code> service container; plus <code>npm run lint</code> and <code>npm run build</code>. All must pass to merge.</li>
+    <li>No test sleeps or reads the wall clock: time moves only through the injected <code>Clock</code>, and jobs are run by calling their handlers directly.</li>
+    <li>Requests authenticate with <code>X-Account-Id</code>; ids 1–3 are admins, any other seeded id is a plain member. The trigger is exercised by calling <code>NotificationTrigger</code> directly — unit (fake queue), integration (real stand-in queue, handler run once), and end to end (then read the member list as that account). No CLI or dev endpoint exists for it.</li>
+  </ul>
+</section><section id="s11">
+  <h2><span class="n">11</span>Deployment, rollback, observability</h2>
+
+  <h3>11.1 Topology</h3>
+  <p>One container image, two services: <strong>api</strong> (<code>node dist/api.js</code>, at least two tasks behind
+  the load balancer) and <strong>worker</strong> (<code>node dist/worker.js</code>, at least one task, no ingress).
+  Extra workers add queue throughput; only the lock holder runs the scheduler. Target runtime is ECS Fargate — a
+  placeholder for whatever the company already runs; nothing in this design depends on it.</p>
+  <p class="alt"><b>Close second:</b> one combined process — simpler, but a large fan-out would compete with API
+  latency.</p>
+
+  <h3>11.2 Deploy</h3>
+  <p>CI builds the image. Migrations run as a release step before new tasks take traffic. Because schema changes follow
+  expand → contract (§5.8), old and new code both work against the schema during a rolling deploy.</p>
+
+  <h3>11.3 Rollback</h3>
+  <p>Redeploy the previous image. There are no down-migrations; the newer schema is compatible with the older code by
+  construction. A failed migration aborts the release before any task is replaced.</p>
+
+  <h3>11.4 Observability</h3>
+  <ul>
+    <li><strong>Health:</strong> <code>GET /healthz</code> (process up) and <code>GET /readyz</code> (database ping) on the API; the worker exposes the same two on a side port.</li>
+    <li><strong>Metrics:</strong> request count, duration, and status by route; deliveries created per account per day (p99 and max, as an abuse signal); queue depth and oldest queued age; job outcomes and duration by type; rows written per fan-out; <strong>due-send lag</strong> (<code>sent_at − due_at</code>); dead-job count; trigger enqueue failures; member-route 404 rate (a probing signal).</li>
+    <li><strong>Logs:</strong> §9.5, searchable by <code>requestId</code> and <code>jobId</code>.</li>
+  </ul>
+
+  <h3>11.5 Alarms</h3>
+  <ul>
+    <li>Any job <code>dead</code> — a send or import someone expects did not happen.</li>
+    <li>Due-send lag above 5 minutes, or <code>scheduled_runs.due_send</code> not completed in 5 minutes.</li>
+    <li>Rescan not completed in 25 hours.</li>
+    <li>An import <code>processing</code> for more than 1 hour.</li>
+    <li>Trigger enqueue failures above zero; API 5xx rate; readiness failing.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="s12">
+  <h2><span class="n">12</span>Implementation units</h2>
+
+  <p>The work divides into units with disjoint file ownership, so they can be built by separate workers in parallel
+  once their dependencies exist. Each unit is done when its listed tests pass. This is a dependency structure, not a
+  schedule.</p>
+
+  <div class="scroll"><table>
+    <tr><th>Unit</th><th>Owns</th><th>Needs</th><th>Done when</th></tr>
+    <tr><td class="nw"><b>U0 Foundation</b></td><td><code>package.json</code>, <code>tsconfig</code>, <code>docker-compose.yml</code>, <code>knexfile</code>, <code>migrations/</code> (all but the jobs migration, including the stand-in accounts migration and seed), <code>src/config</code>, <code>src/db</code>, <code>src/lib</code> including <code>deps.ts</code>, <code>metrics.ts</code> and every shared type, <code>test/helpers</code> (app factory, fixed clock, <code>FakeQueue</code>, DB reset, row factories)</td><td>—</td><td>With <code>STANDINS=true</code>, migrations apply to an empty MySQL and the seed loads; §10.1 unit tests pass; <code>npm test</code> runs</td></tr>
+    <tr><td class="nw"><b>U1 HTTP shell</b></td><td><code>src/app.ts</code>, <code>src/api.ts</code>, <code>src/middleware</code> including <code>headerAuth.ts</code>; mounts <code>admin/router.ts</code> and <code>member/router.ts</code> (owned by U3 and U6, created as empty stubs here)</td><td>U0</td><td>401 / 403 / 429 / 500 / 503 envelope tests; health endpoints</td></tr>
+    <tr><td class="nw"><b>U2 Queue (interface + stand-in)</b></td><td><code>src/queue</code>, the <code>jobs</code> migration, <code>src/worker.ts</code> (reads the two registries only), <code>src/jobs/index.ts</code>, <code>src/scheduler/index.ts</code>, <code>leader.ts</code>, <code>schedule.ts</code>, <code>housekeeping.ts</code></td><td>U0</td><td>§10.2 queue tests; leader lock test; worker starts with empty registries</td></tr>
+    <tr><td class="nw"><b>U3 Admin read + create</b></td><td><code>src/admin</code> except import and update files</td><td>U1, U2 (<code>enqueue</code>)</td><td>Contract tests for list, get, create-filter, create-event</td></tr>
+    <tr><td class="nw"><b>U4 Admin update</b></td><td><code>src/admin/updateNotification.ts</code></td><td>U3</td><td>Admin PATCH contract tests</td></tr>
+    <tr><td class="nw"><b>U5 Imports</b></td><td><code>src/admin/createImport.ts</code>, <code>getImport.ts</code>, <code>createImportRun.ts</code>, <code>src/jobs/processImport.ts</code>, and its routes in <code>admin/router.ts</code></td><td>U3 (router and schemas), U4 (remove-before-send tests), U8 (due-send tests)</td><td>Import contract tests; CSV integration tests</td></tr>
+    <tr><td class="nw"><b>U6 Member API</b></td><td><code>src/member</code></td><td>U1</td><td>Three member contract files</td></tr>
+    <tr><td class="nw"><b>U7 Filter sends</b></td><td><code>src/eligibility</code>, <code>src/jobs/fanoutFilter.ts</code>, <code>src/jobs/accountRecheck.ts</code>, <code>src/scheduler/rescan.ts</code></td><td>U2</td><td>Eligibility unit tests; filter integration tests</td></tr>
+    <tr><td class="nw"><b>U8 Event sends</b></td><td><code>src/trigger</code>, <code>src/jobs/eventDelivery.ts</code>, <code>src/jobs/cancelScheduled.ts</code>, <code>src/scheduler/dueSend.ts</code></td><td>U2</td><td>Event and trigger-safety integration tests; due-send tests</td></tr>
+    <tr><td class="nw"><b>U9 Expiry</b></td><td><code>src/scheduler/expiry.ts</code></td><td>U2</td><td>Expiry integration test</td></tr>
+    <tr><td class="nw"><b>U10 Ops</b></td><td><code>Dockerfile</code>, CI workflow, metrics emission points, <code>README.md</code></td><td>all</td><td>Image builds; CI green; every §11.4 metric emitted</td></tr>
+  </table></div>
+
+  <h3>Ground rules for implementers</h3>
+  <ul>
+    <li><strong>U0 goes first and alone</strong>; it fixes the shared types (<code>Deps</code>, <code>Metrics</code>, <code>Queue</code>, <code>AuthProvider</code>, <code>JobType</code> and payload types, <code>AppError</code>, row types for every table). After U0: U1 and U2 in parallel; then U3, U6, U7, U8, U9 in parallel; U4 after U3; U5 after U3, U4 and U8; U10 last.</li>
+    <li>§3 is the contract. If an implementation detail seems to require changing a request or response shape, stop and raise it — do not adjust the shape.</li>
+    <li>§2.1 is the behavior. Any rule there that lacks a failing-then-passing test is not done.</li>
+    <li>All time comes from <code>deps.clock</code>; all database access goes through <code>deps.db</code>; no module-level singletons.</li>
+    <li>Every delivery insert anywhere goes through <code>lib/insertDeliveries.ts</code> with a <code>dedupe_key</code> from §5.3 and a fresh <code>public_id</code>. Never write <code>INSERT IGNORE</code>.</li>
+    <li>Only <code>eligibility/accountsSchema.ts</code> may name the accounts table's columns.</li>
+    <li>The fan-out's eligibility <em>reads</em> use <code>deps.dbReader</code>; every write uses <code>deps.db</code>.</li>
+    <li>Only <code>src/queue/dbQueue.ts</code> may touch the <code>jobs</code> table. Everything else uses <code>deps.queue</code> and must not assume ordering, exactly-once delivery, or that an enqueue is atomic with a database write.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="s13">
+  <h2><span class="n">13</span>Risks accepted</h2>
+
+  <div class="card"><div class="card-title">13.1 The queue in this build is a stand-in</div>
+    <p>The <code>jobs</code>-table queue is temporary: enough to run and demonstrate every flow, not built to scale
+    (one polled table, row-lock contention under load). Accepted because the production queue already exists and this
+    service should not grow its own. The cost is contained by the <code>Queue</code> interface — nothing outside
+    <code>src/queue</code> knows which implementation is running. Until the real adapter exists, the stand-in is the
+    throughput ceiling.</p></div>
+
+  <div class="card"><div class="card-title">13.2 Whole-base fan-out writes</div>
+    <p>A filter matching every member writes one row per member, in 1,000-row pages. The cost is elevated write load
+    during a campaign, visible in the fan-out metrics. Accepted because cheap reads, per-delivery clicked state, and the
+    once-per-month rule all depend on the rows existing <span class="ref">A4</span>.</p></div>
+
+  <div class="card"><div class="card-title">13.3 An event can be lost between commit and enqueue</div>
+    <p>The trigger enqueues after the business write commits and swallows failures (B11), so a crash or queue outage in
+    that gap loses the notification for that occurrence; it is counted and alarmed, not recovered. Accepted to keep the
+    business path free of this service's failures. The improvement before production use, if losses matter, is an outbox: the trigger writes a row in the business
+    transaction instead of enqueueing, and a relay in the worker moves unsent rows to the queue — never lost, only
+    delayed. Not designed in yet because it depends on the business code's transaction boundaries. Separately, the trigger does no lookups, so every occurrence costs
+    one job even when no notification is configured for it.</p></div>
+
+  <div class="card"><div class="card-title">13.4 Immediate sends can lag by a poll interval</div>
+    <p>An "immediate" event delivery appears after the worker's next poll (about a second); a scheduled one up to 60
+    seconds after <code>due_at</code>. The member-facing timestamp starts from the actual go-live, so it is never wrong,
+    only slightly later than the event.</p></div>
+
+  <div class="card"><div class="card-title">13.5 Cascade delete cost</div>
+    <p>Deleting an account with a long delivery history is a heavier statement because of the cascade
+    <span class="ref">A52</span>. Account deletion is rare; chunked pre-deletion is the fallback if it ever hurts.</p></div>
+
+  <div class="card"><div class="card-title">13.6 Per-instance rate limits</div>
+    <p>Limits are enforced per API instance, so the effective ceiling scales with instance count.</p></div>
+
+  <div class="card"><div class="card-title">13.7 Chosen numbers are starting points</div>
+    <p>Rate limits, CSV caps, batch sizes, poll and due-send intervals, and the daily rescan are configuration, expected
+    to be tuned <span class="ref">A33</span>. The page size of 25 is not — it is contract.</p></div>
+
+  <div class="card"><div class="card-title">13.8 Immediate eligibility depends on call sites this service does not own</div>
+    <p>"Sent when the account changes" is only as complete as the list of places business code calls
+    <code>accountChanged</code>. A missed or future call site degrades silently to the rescan's latency (up to a day)
+    — never to a lost send. Accepted because the calls cannot be built or verified from this repository; the rescan
+    exists precisely so a gap is slow rather than wrong. A changed-then-reverted account can still be missed if the
+    revert lands before the job runs (seconds).</p></div>
+
+  <div class="card"><div class="card-title">13.9 An import report can be very large</div>
+    <p>The import report returns every rejected id with no cap, so a file of mostly unknown ids produces a response of
+    up to a million entries (tens of megabytes). Accepted because real files are overwhelmingly valid and an uncapped
+    list keeps the report exact. If it becomes a problem, the fix is to page the error list.</p></div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s14">
+  <h2><span class="n">14</span>Decisions</h2>
+
+  <p>One numbered list, numbers stable across revisions. §14.1 holds anything still open. Everything decided is in
+  §14.2, with where in the document it landed; spec readings are in §14.3; differences from the earlier architecture
+  document are in §14.4.</p>
+
+  <h3 id="s14-1">14.1 Still open</h3>
+  <p>Nothing. Every item raised by the spec review and the design audit has been decided; see §14.2.</p>
+
+  <h3 id="s14-2">14.2 Decided</h3>
+  <h4>Accepted and written into the design</h4>
+  <ul>
+    <li><b>4</b> How business code gets a trigger, and the shared types — <code>createNotificationTrigger(config)</code>, the <code>QUEUE_IMPL</code> setting, and the <code>Deps</code>, <code>Metrics</code> and <code>FakeQueue</code> types written out (§6.3, §9.6)</li>
+    <li><b>5</b> A failed import — failed-import report defined; a failed import is re-run by creating a new run of it, <code>POST …/imports/:id/runs</code> (§3.4, §8.2)</li>
+    <li><b>6</b> First-of-month load — at most two fan-outs at a time; expiry runs daily with a row budget (§8.3)</li>
+    <li><b>7</b> Cost of the rescan query — range-based batching — the fan-out scans accounts in ranges of 10,000 ids (§7.2, §8.2)</li>
+    <li><b>9</b> Implementation units overlap — registries per unit, shared <code>adapters/</code> module, unit dependencies fixed (§6, §12)</li>
+    <li><b>11</b> "Date" versus date and time — a date-only input means midnight in <code>BUSINESS_TIMEZONE</code> (§3.1, §9.6)</li>
+    <li><b>13</b> Pre-order with no publication date — the pre-enroll event is the audiobook <em>becoming available</em>, reported by business code at publication; delivery is immediate, and all publication-date scheduling, the audiobooks dependency and the <code>audiobook_id</code> column are removed (B10, §6.3, §8.2, A57)</li>
+    <li><b>16</b> Import response and the notification id — <code>notificationId</code> in the import response and report (§3.4)</li>
+    <li><b>17</b> Retry key is not tied to its request — the retry key is bound to endpoint and body hash; reuse with a different request is a 400 (§9.4)</li>
+    <li><b>19</b> How fast a lost enqueue is recovered — housekeeping runs every 5 minutes and also re-enqueues missing fan-outs (§8.3)</li>
+    <li><b>20</b> Releasing a very large CSV at once — due-send runs on every worker (§8.3)</li>
+    <li><b>21</b> Transaction isolation — sessions run at READ COMMITTED (§5)</li>
+    <li><b>22</b> Character set and collation — <code>public_id</code> uses an ASCII binary collation; tables are utf8mb4 (§5)</li>
+    <li><b>23</b> Seeing whether a send worked — the "admins can see whether a send worked" claim is dropped; only imports have a report (A46)</li>
+    <li><b>24</b> Housekeeping and a long-running import — imports are re-enqueued only when they stop making progress (§8.3)</li>
+    <li><b>25</b> Order of the rules on the update endpoint — update rules are evaluated in a fixed order (§3.4)</li>
+    <li><b>27</b> Is the content cache worth having? — the content cache is removed; text columns come from the existing join (§7.5, §9.7)</li>
+    <li><b>30</b> Leftover account ids — failed-import files and dead jobs are purged after 30 days (§8.3)</li>
+    <li><b>36</b> Event volume per account — per-account delivery volume metric (§11.4)</li>
+    <li><b>41</b> Where the rescan reads from — fan-out eligibility reads use the reader endpoint (§8.3, §9.6)</li>
+    <li><b>42</b> Old events replayed — replayed events older than the window are dropped (§8.2)</li>
+    <li><b>44</b> In-process trigger — in-process trigger stated as an assumption (§6.3)</li>
+    <li><b>45</b> Why scheduled rows, not delayed queue jobs — why scheduled rows rather than delayed queue jobs is written down (§8.3)</li>
+    <li><b>46</b> Where the jobs table is created — the jobs table has its own migration (§5.8)</li>
+    <li><b>47</b> Stand-in queue upkeep — stand-in upkeep runs in its own loop; housekeeping added to Figure 1 (§8.1)</li>
+    <li><b>48</b> Figure 3 — Figure 3 labels due-send as delayed and pre-order rows only</li>
+    <li><b>49</b> CSV isActive — csv <code>isActive</code> is "true until removed" (§3.3)</li>
+    <li><b>50</b> Malformed member id — member ids are never shape-validated; always 404 (§9.2)</li>
+    <li><b>51</b> requestId in jobs — <code>requestId</code> is part of every job payload (§6.3)</li>
+    <li><b>52</b> Import re-check wording — the import job re-checks removal before every chunk (§8.2)</li>
+    <li><b>53</b> "Keeps memory flat" — memory claim reworded (§4)</li>
+    <li><b>55</b> "Standalone" claim — header now says "standalone for implementation" (reasons for decisions live in the architecture document)</li>
+    <li><b>56</b> <code>liveDate</code> edge cases — a past or present <code>liveDate</code> is rejected with a 400 explaining it must be in the future; fractional seconds are rounded down (§3.4)</li>
+    <li><b>57</b> Admin list details — admin list cursor and inverted range defined (§3.4)</li>
+    <li><b>60</b> Settings used but not listed — missing settings added to the config table (§9.6)</li>
+  </ul>
+  <h4>Kept as designed</h4>
+  <ul>
+    <li><b>1</b> The refer-a-friend example — the refer-a-friend example is an <code>enrolled</code> event reported for the referrer (B9)</li>
+    <li><b>2</b> Real shape of the accounts and audiobooks tables — the assumed shapes of the accounts and audiobooks tables stand for this exercise</li>
+    <li><b>3</b> Which job queue, and gaps in its contract — the queue is a temporary stand-in for an interview project; the contract is not refined further</li>
+    <li><b>8</b> One clock for all timestamps — <code>created_at</code> stays a database default; it is informational. Timestamps the design reasons about come from the application clock (§5)</li>
+    <li><b>10</b> What "2 months" means — "2 months" = the go-live month plus the next, in UTC</li>
+    <li><b>12</b> Events can be lost — an event can be lost between commit and enqueue; the outbox is recorded as the improvement before production use (§13.3)</li>
+    <li><b>14</b> Erasure and how long the archive is kept — the archive is kept indefinitely for now</li>
+    <li><b>15</b> Rescan cadence — daily rescan stays as the safety net</li>
+    <li><b>38</b> Same fan-out running twice — a fan-out may run twice concurrently; wasted work only, never a duplicate send</li>
+    <li><b>39</b> Scheduler after a restart or failover — no scheduler fencing or catch-up; cannot affect sends</li>
+    <li><b>40</b> Indexes on the delivery table — five secondary indexes on the delivery table</li>
+    <li><b>43</b> Leader election — leader election stays for the three scheduled jobs; due-send runs everywhere</li>
+  </ul>
+  <h4>Deferred — not addressed for this exercise</h4>
+  <ul>
+    <li><b>18</b> Limits on admin writes</li>
+    <li><b>26</b> Deactivate then reactivate</li>
+    <li><b>28</b> No way to edit a notification</li>
+    <li><b>29</b> Capacity numbers and a production-readiness list — production-readiness list and capacity numbers — belongs in the README, not here</li>
+    <li><b>31</b> Requests with no login</li>
+    <li><b>32</b> Database credentials</li>
+    <li><b>33</b> Admin role check</li>
+    <li><b>34</b> How SQL is built</li>
+    <li><b>35</b> Caching headers</li>
+    <li><b>37</b> Log retention</li>
+    <li><b>54</b> Wording of the requirement table — requirement-table wording</li>
+    <li><b>58</b> CSV parsing details — CSV parsing details</li>
+    <li><b>59</b> Event edge cases</li>
+    <li><b>61</b> Running it locally — partly superseded by the stand-ins (§5.9, §9.1); no dev CLI for the trigger, by decision: it is exercised through tests</li>
+  </ul>
+  <h4>Raised by the audit and declined</h4>
+  <ul>
+    <li>Admin audit trail and a separate publish permission.</li>
+    <li><code>/admin</code> exposure, CSRF, CORS, and cookie settings — the host codebase's job.</li>
+    <li>Deactivate returning <code>409</code> while a large fan-out is running — accepted as is.</li>
+    <li>The first migration failing on an empty database — superseded: the stand-in <code>accounts</code> migration (§5.9) makes an empty database workable.</li>
+    <li>Making the <code>jobs</code> table the permanent queue — the queue is pre-existing.</li>
+    <li>A "build now / deferred" scope split.</li>
+  </ul>
+
+  <h3 id="s14-3">14.3 How the spec is read</h3>
+  <h4>Decided</h4>
+  <div class="scroll"><table>
+    <tr><th>Spec text</th><th>This design</th></tr>
+    <tr><td>"At any point" eligibility (line 95)</td><td>Business code reports account changes for an immediate re-check; a daily rescan is the safety net.</td></tr>
+    <tr><td>"Only sent once per month" (lines 96–97)</td><td>Monthly: every still-eligible account gets a new delivery each month while the notification is active.</td></tr>
+    <tr><td>"Wiped after 2 months" (line 48)</td><td>Hidden from members and moved to an archive kept for audit.</td></tr>
+    <tr><td>Icon and link on every notification (lines 49–53)</td><td>The list is the short form; the opened notification returns everything.</td></tr>
+  </table></div>
+  <h4>Assumed, low risk</h4>
+  <p>Stated here so a reviewer can see them. No action unless you disagree.</p>
+  <div class="scroll"><table>
+    <tr><th>Spec text</th><th>This design</th></tr>
+    <tr><td>Blue bubble "if they've never clicked it" (line 55)</td><td>Clicked is tracked per delivery, so a monthly resend or a second event shows a fresh bubble.</td></tr>
+    <tr><td>Two names for the audiobook event (lines 71, 78)</td><td>One trigger, reported by business code when the pre-ordered audiobook is published; the delivery is immediate.</td></tr>
+    <tr><td>"All people on the list will see" (line 103)</td><td>Unknown ids are skipped and reported; a malformed file is rejected; files are capped at 10 MB and 1,000,000 rows.</td></tr>
+    <tr><td>Credits "&lt;1, &gt;=1, =3" (lines 45, 89–92)</td><td>One inclusive whole-number range; either end optional.</td></tr>
+    <tr><td>CSV "active is editable: NO" (line 102)</td><td>Always active; cannot be paused, only removed.</td></tr>
+    <tr><td>Inactive means "no NEW notifications" (line 62)</td><td>Deactivating also cancels deliveries that were scheduled but not yet shown.</td></tr>
+    <tr><td>Remove from app (line 63)</td><td>Permanent; cannot be undone.</td></tr>
+    <tr><td>"All notifications are wiped" (line 48)</td><td>Applies to each delivery; the notification itself never expires.</td></tr>
+    <tr><td>Initial state of "active" (lines 62, 80, 94)</td><td>The admin states it explicitly on every create; the request is rejected without it.</td></tr>
+  </table></div>
+
+  <h3 id="s14-4">14.4 Differences from the architecture document</h3>
+  <p><code>docs/architecture.md</code> is kept as a historical record. These are the places where this design added to
+  or tightened it; this document governs.</p>
+  <details>
+    <summary>Show the thirteen differences</summary>
+    <div class="scroll"><table>
+    <tr><th></th><th>Addition</th><th>Why it was needed</th></tr>
+    <tr><td>a</td><td><code>notifications.event_trigger</code> column</td><td>The create-event contract requires the trigger name, and the architecture's field list has nowhere to store it.</td></tr>
+    <tr><td>b</td><td><em>(withdrawn)</em> <code>notification_deliveries.audiobook_id</code> column</td><td>Re-reading the publication date before sending requires knowing which audiobook a scheduled delivery is waiting on.</td></tr>
+    <tr><td>m</td><td>Stand-ins for the accounts table (migration + seed) and for authentication (header-based provider), both gated out of production</td><td>Needed so the system can be run and tested before the real dependencies are wired in.</td></tr>
+    <tr><td>l</td><td>Filters stored as one JSON column on <code>notifications</code>, in the API shape</td><td>The architecture left the set representation to tech design; one column replaces two tables and all assembly code, and the definition is only ever read one notification at a time.</td></tr>
+    <tr><td>c</td><td><code>dedupe_key</code> column and one unique index for all three types</td><td>The architecture states the uniqueness rules <span class="ref">A46</span>; a nullable <code>occurrence_key</code> cannot enforce them for filter and csv rows in MySQL.</td></tr>
+    <tr><td>d</td><td>Admin responses carry <code>liveDate</code> for csv notifications and a nullable <code>activatedAt</code> for the others, instead of one <code>liveDate</code> for all</td><td>A filter or event notification that has never been activated has no go-live time; the architecture typed the field as always-present.</td></tr>
+    <tr><td>e</td><td>Create and update responses return <code>NotificationDetail</code>; the detail includes <code>filters</code>, <code>eventTrigger</code>, <code>delay</code></td><td>The architecture left the 201 / 200 bodies undefined, and its detail shape gave an admin no way to see how a notification is configured. All additions are new optional fields.</td></tr>
+    <tr><td>f</td><td>A malformed CSV row rejects the whole upload with <code>400</code></td><td>The import report's error entries carry an integer <code>accountId</code>, so non-integer rows cannot be reported there; rejecting at upload keeps that contract exact.</td></tr>
+    <tr><td>g</td><td>No response caching at all</td><td>The architecture calls for response caching with purge-on-remove <span class="ref">A36</span>. Visibility must be evaluated live anyway, and the text columns come from a join the list query already makes, so a cache would save nothing; dropping it also removes the purge protocol and a cross-module dependency.</td></tr>
+    <tr><td>h</td><td>Admin list filter parameters <code>type</code>, <code>createdFrom</code>, <code>createdTo</code>; list ordered by <code>createdAt</code></td><td>Deferred to tech design by <span class="ref">A22</span>.</td></tr>
+    <tr><td>i</td><td>Exact <code>409</code> conditions on the admin update; same-value <code>isActive</code> is a no-op 200</td><td>The architecture named "concurrent state change" without defining it.</td></tr>
+    <tr><td>j</td><td><code>Idempotency-Key</code> header; multipart parts <code>notification</code> + <code>file</code>; CSV caps; path-only input rule for image and link; field length limits</td><td>All deferred to tech design <span class="ref">A3</span> <span class="ref">A33</span> <span class="ref">A43</span> <span class="ref">A50</span>.</td></tr>
+    <tr><td>k</td><td>The queue is an interface over a pre-existing system; the shipped implementation is a temporary stand-in; enqueues happen after commit, each with a recovery path</td><td>The architecture only said work goes "through a queue" <span class="ref">A46</span>.</td></tr>
+  </table></div>
+  </details>
+</section>
+
+<section id="sA">
+  <h2><span class="n">A</span>Decision register</h2>
+
+  <p>The design decisions referenced by <span class="ref">A#</span> tags, one line each, as settled in the architecture
+  review. Numbers 6 and 8 were retired during review and are intentionally absent; A56 was added after it.</p>
+
+  <div class="scroll"><table>
+    <tr><th>Id</th><th>Decision</th></tr>
+    <tr><td>A1</td><td>Two API surfaces: admin (company website) and member (app).</td></tr>
+    <tr><td>A2</td><td>Authentication is a logged-in session; otherwise 401.</td></tr>
+    <tr><td>A3</td><td>Store image key and link path only; compose full URLs on read from configured base URLs.</td></tr>
+    <tr><td>A4</td><td>Fan-out on write: one delivery row per account, created by background workers.</td></tr>
+    <tr><td>A5</td><td>Delivery state lives on the delivery row: <code>is_clicked</code>, <code>sent_at</code>, <code>due_at</code>.</td></tr>
+    <tr><td>A7</td><td>Expiry acts on delivery rows by go-live time, not on notifications or creation time.</td></tr>
+    <tr><td>A9</td><td>Visibility = sent, not removed, in window; <code>active</code> gates only new sends.</td></tr>
+    <tr><td>A10</td><td>The CSV holds account ids only; content and send date are given once on the notification.</td></tr>
+    <tr><td>A11</td><td>Filters store a set of values each; credits as optional inclusive min and max. (Stored as one JSON column since 2026-10-05.)</td></tr>
+    <tr><td>A12</td><td>Event notifications are triggered by an in-process class, not an HTTP endpoint.</td></tr>
+    <tr><td>A13</td><td>Callers may invoke the trigger more than once per occurrence; duplicates must not multiply deliveries.</td></tr>
+    <tr><td>A14</td><td>Account data is readable by this service when filters are evaluated.</td></tr>
+    <tr><td>A15</td><td>"Static month" = calendar month; visible during the go-live month and the next one.</td></tr>
+    <tr><td>A16</td><td><em>Retired 2026-10-05:</em> the publication date was to be read from an existing table; superseded by A57.</td></tr>
+    <tr><td>A17</td><td>A recurring rescan inserts deliveries for eligible accounts lacking one this month.</td></tr>
+    <tr><td>A18</td><td>Remove-from-app is a flag on the notification, honored by every member read.</td></tr>
+    <tr><td>A19</td><td>Scheduled sends are unsent delivery rows with <code>due_at</code>; a frequent job releases them.</td></tr>
+    <tr><td>A20</td><td>Deliveries have their own auto-increment primary key. (Table renamed from <code>notifications_accounts</code> to <code>notification_deliveries</code> on 2026-10-06.)</td></tr>
+    <tr><td>A21</td><td>No <code>sent</code> flag; sent-ness derives from <code>sent_at</code>; monthly resends are new rows.</td></tr>
+    <tr><td>A22</td><td>The admin list is filterable by type and date.</td></tr>
+    <tr><td>A23</td><td>Expiry archives out-of-window deliveries to a separate table, then deletes them.</td></tr>
+    <tr><td>A24</td><td>Every filter is optional; omitted or empty means all.</td></tr>
+    <tr><td>A25</td><td><code>isActive</code> is required on create; there is no default. (Originally "defaults to false"; changed 2026-10-05.)</td></tr>
+    <tr><td>A26</td><td>Changing <code>isActive</code> on a CSV notification is a 400.</td></tr>
+    <tr><td>A27</td><td>Naming: snake_case tables and columns, camelCase JSON, canonical table names and error codes.</td></tr>
+    <tr><td>A28</td><td>All timestamps are UTC, ISO-8601 on the wire; month boundaries are UTC.</td></tr>
+    <tr><td>A29</td><td>Cursor pagination, page size capped at 25, <code>{ items, nextCursor }</code> envelope.</td></tr>
+    <tr><td>A30</td><td>Remove is irreversible; invalid update bodies are a defined 400.</td></tr>
+    <tr><td>A31</td><td>One error envelope and a fixed set of codes.</td></tr>
+    <tr><td>A32</td><td>CSV import silently de-duplicates repeated account ids.</td></tr>
+    <tr><td>A33</td><td>Rate limiting is generic (429); concrete limits and caps are tunable.</td></tr>
+    <tr><td>A34</td><td>Admin authorization uses the pre-existing role system; non-admins get 403.</td></tr>
+    <tr><td>A35</td><td>Clicked is set by an explicit write (<code>PATCH /notifications/:id</code>); the detail GET has no side effects.</td></tr>
+    <tr><td>A36</td><td>A remove must reach members immediately. (Met by caching nothing; the "purge on remove" mechanism is unnecessary.)</td></tr>
+    <tr><td>A37</td><td>A member can read only their own visible deliveries; everything else is the same 404.</td></tr>
+    <tr><td>A38</td><td>Trigger calls carry an occurrence key; deliveries are unique per notification, account, and key.</td></tr>
+    <tr><td>A39</td><td>If account data is unavailable, jobs skip and retry; catch-up is automatic.</td></tr>
+    <tr><td>A40</td><td>The member surface is keyed by delivery, and every lookup includes the caller's account.</td></tr>
+    <tr><td>A41</td><td>Member list items carry no image; the detail does.</td></tr>
+    <tr><td>A42</td><td>The trigger never fails the business action that calls it.</td></tr>
+    <tr><td>A43</td><td>Imports return an id; validation results are produced asynchronously and fetched as a report.</td></tr>
+    <tr><td>A44</td><td>Admin routes live under <code>/admin</code>.</td></tr>
+    <tr><td>A45</td><td>Filter values are arrays; country uses the account table's codes (<code>US</code>, <code>CA</code>).</td></tr>
+    <tr><td>A46</td><td>Workers are queue-fed, batch-inserting, at-least-once with idempotent inserts; import outcomes are visible to admins (the broader "every send's outcome is visible" claim was dropped 2026-10-05).</td></tr>
+    <tr><td>A47</td><td>Deactivating or removing cancels the notification's scheduled deliveries.</td></tr>
+    <tr><td>A48</td><td>A monthly resend is a new list entry with its own timestamp and unclicked state.</td></tr>
+    <tr><td>A49</td><td><em>Retired 2026-10-05:</em> re-reading the publication date before sending; superseded by A57.</td></tr>
+    <tr><td>A50</td><td>Admin creates carry a client request key; a repeat returns the original result.</td></tr>
+    <tr><td>A51</td><td>Notification records are kept indefinitely.</td></tr>
+    <tr><td>A52</td><td>Deliveries reference accounts with cascade delete; the archive keeps a bare account id.</td></tr>
+    <tr><td>A53</td><td>The 2-month window applies to members only; the admin list is unbounded.</td></tr>
+    <tr><td>A54</td><td>Members see opaque random delivery ids; internal ids never leave the admin side.</td></tr>
+    <tr><td>A55</td><td>Creation is split into per-type endpoints with unconditional schemas.</td></tr>
+    <tr><td>A56</td><td>Filter eligibility is re-checked per account when business code reports an account change, and after each event; the rescan (A17) is the safety net. Decided after the spec audit, superseding rescan-only.</td></tr>
+    <tr><td>A57</td><td>The pre-enroll audiobook event is the audiobook <em>becoming available</em>: business code reports it at publication, once per pre-ordering member, and the delivery is immediate. This service never schedules against a publication date.</td></tr>
+  </table></div>
+</section>
+
+</main>
+</div>
+</body>
+</html>
