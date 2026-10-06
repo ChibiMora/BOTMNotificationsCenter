@@ -286,3 +286,67 @@ describe('createNotificationTrigger bundle key and failure handling', () => {
     expect(pools.length).toBe(before + 2);
   });
 });
+
+describe('record() validates occurredAt format and range, and reads each property once', () => {
+  for (const [label, at] of [
+    ['year 999', new Date('0999-12-31T23:59:59Z')],
+    ['year 9999', new Date('9999-01-01T00:00:00Z')],
+    ['extended year +275760', new Date(8.64e15)],
+    ['negative year', new Date('-000001-01-01T00:00:00Z')],
+  ] as const) {
+    it(`an occurredAt in ${label} is dropped and counted, never thrown`, async () => {
+      const { t, queue, metrics } = make();
+      await expect(t.record({ ...event, occurredAt: at })).resolves.toBeUndefined();
+      expect((queue as FakeQueue).enqueued).toEqual([]);
+      expect(failures(metrics)).toBe(1);
+    });
+  }
+
+  it('the last accepted instant (9998-12-31T23:59:59.999Z) is enqueued', async () => {
+    const { t, queue } = make();
+    await t.record({ ...event, occurredAt: new Date('9998-12-31T23:59:59.999Z') });
+    expect((queue as FakeQueue).enqueued).toHaveLength(1);
+  });
+
+  it('getters that change on every read: the enqueued payload equals the validated values', async () => {
+    const { t, queue } = make();
+    const seq = <T>(...vals: T[]) => {
+      let i = 0;
+      return () => vals[Math.min(i++, vals.length - 1)]!;
+    };
+    // Every read is individually valid but different: only a single read per property keeps the payload coherent.
+    const type = seq<unknown>('shipped', 'enrolled', 'preenrollAudiobook');
+    const accountId = seq<unknown>(7, 8, 9);
+    const occurredAt = seq<unknown>(
+      new Date('2026-10-01T12:00:00Z'),
+      new Date('2026-10-02T12:00:00Z'),
+      new Date('2026-10-03T12:00:00Z'),
+    );
+    const occurrenceKey = seq<unknown>('shipment:42', 'shipment:43', 'shipment:44');
+    const tricky = {
+      get type() {
+        return type();
+      },
+      get accountId() {
+        return accountId();
+      },
+      get occurredAt() {
+        return occurredAt();
+      },
+      get occurrenceKey() {
+        return occurrenceKey();
+      },
+    } as unknown as TriggerEvent;
+    await t.record(tricky);
+    const enqueued = (queue as FakeQueue).enqueued;
+    expect(enqueued).toHaveLength(1);
+    for (const job of enqueued) {
+      expect(job.payload).toEqual({
+        type: 'shipped',
+        accountId: 7,
+        occurredAt: '2026-10-01T12:00:00.000Z',
+        occurrenceKey: 'shipment:42',
+      });
+    }
+  });
+});

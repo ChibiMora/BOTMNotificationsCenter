@@ -1,6 +1,7 @@
 // Due-send timer (§7.4, §8.3 Due-send row; B10): releases due scheduled rows, every worker, batch per transaction.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { testDb, resetDb, testConfig } from '../helpers/db.js';
+import { ownLocks, recordLocks } from '../helpers/locks.js';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { makeNotification } from '../helpers/factories.js';
 import { insertDeliveries } from '../../src/lib/insertDeliveries.js';
@@ -116,19 +117,9 @@ describe('due-send', () => {
     const trx = await db.transaction();
     try {
       await dueSendPass(deps, trx);
-      const locks: Array<{ t: string; n: number }> = (
-        await db.raw(
-          `SELECT OBJECT_NAME AS t, COUNT(*) AS n FROM performance_schema.data_locks
-           WHERE OBJECT_SCHEMA = DATABASE() AND LOCK_TYPE = 'RECORD' GROUP BY OBJECT_NAME`,
-        )
-      )[0];
-      const by = Object.fromEntries(locks.map((l) => [l.t, Number(l.n)]));
-      const nLocks: Array<{ m: string }> = (
-        await db.raw(
-          `SELECT LOCK_MODE AS m FROM performance_schema.data_locks
-           WHERE OBJECT_SCHEMA = DATABASE() AND OBJECT_NAME = 'notifications' AND LOCK_TYPE = 'RECORD'`,
-        )
-      )[0];
+      const by: Record<string, number> = {};
+      for (const l of await ownLocks(db)) if (l.type === 'RECORD') by[l.table] = (by[l.table] ?? 0) + 1;
+      const nLocks = (await recordLocks(db, 'notifications')).map((l) => ({ m: l.mode }));
       console.info('due-send notifications record locks:', JSON.stringify(nLocks.map((l) => l.m)));
       expect(nLocks.filter((l) => /^X/.test(l.m))).toEqual([]);
       const n = await db('notifications').first('id');
@@ -151,12 +142,9 @@ describe('due-send', () => {
     const trx = await db.transaction();
     try {
       await dueSendPass(deps, trx);
-      const locks: Array<{ t: string; m: string; i: string | null }> = (
-        await db.raw(
-          `SELECT OBJECT_NAME AS t, LOCK_MODE AS m, INDEX_NAME AS i FROM performance_schema.data_locks
-           WHERE OBJECT_SCHEMA = DATABASE() AND LOCK_TYPE = 'RECORD' AND OBJECT_NAME <> 'notification_deliveries'`,
-        )
-      )[0];
+      const locks = (await ownLocks(db))
+        .filter((l) => l.type === 'RECORD' && l.table !== 'notification_deliveries')
+        .map((l) => ({ t: l.table, m: l.mode, i: l.index }));
       console.info('due-send non-delivery record locks:', JSON.stringify(locks));
       const accounts = locks.filter((l) => l.t === 'accounts');
       expect(accounts.length).toBeLessThanOrEqual(5);

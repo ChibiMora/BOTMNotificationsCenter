@@ -13,12 +13,46 @@ const EVENT_TRIGGERS: ReadonlySet<string> = new Set<EventTrigger>([
   'preenrollAudiobook',
 ]);
 const MAX_OCCURRENCE_KEY = 128;
+// Strict ISO-8601 UTC: `YYYY-MM-DDTHH:MM:SS[.fff…]Z`. Anything else (local-time strings, bare numbers, offsets) is
+// rejected rather than left to Date.parse's lenient, partly local-time reading.
+const ISO_UTC = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+// The DATETIME range the delivery columns can store (whole days); anything outside can never be inserted.
+const MIN_MS = Date.UTC(1000, 0, 1);
+const MAX_MS = Date.UTC(9999, 0, 1); // exclusive: anything on 9998-12-31 is accepted
+const inRange = (ms: number) => ms >= MIN_MS && ms < MAX_MS;
+
+/** True when `s` is a strict UTC timestamp naming a real calendar instant (no roll-over, e.g. Feb 30) in range. */
+function validOccurredAt(s: unknown): s is string {
+  if (typeof s !== 'string') return false;
+  const m = ISO_UTC.exec(s);
+  if (!m) return false;
+  const ms = Date.parse(s);
+  if (Number.isNaN(ms) || !inRange(ms)) return false;
+  const d = new Date(ms);
+  const [y, mo, day, h, mi, sec] = m.slice(1, 7).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  return (
+    d.getUTCFullYear() === y &&
+    d.getUTCMonth() + 1 === mo &&
+    d.getUTCDate() === day &&
+    d.getUTCHours() === h &&
+    d.getUTCMinutes() === mi &&
+    d.getUTCSeconds() === sec
+  );
+}
 
 /** The first invalid field of a payload, or null. The handler checks for itself rather than relying on the trigger. */
 function invalidField(p: JobPayloads['event_delivery']): string | null {
+  if (typeof p !== 'object' || p === null) return 'payload';
   if (typeof p.type !== 'string' || !EVENT_TRIGGERS.has(p.type)) return 'type';
   if (!Number.isSafeInteger(p.accountId) || p.accountId <= 0) return 'accountId';
-  if (typeof p.occurredAt !== 'string' || Number.isNaN(Date.parse(p.occurredAt))) return 'occurredAt';
+  if (!validOccurredAt(p.occurredAt)) return 'occurredAt';
   if (
     typeof p.occurrenceKey !== 'string' ||
     p.occurrenceKey.length === 0 ||
@@ -33,14 +67,15 @@ export const eventDelivery: (
   payload: JobPayloads['event_delivery'],
   ctx: JobContext,
 ) => Promise<void> = async (deps, payload) => {
-  const invalid = invalidField(payload);
-  if (invalid !== null) {
-    // Ids only: never the payload's content (the key may be the bad field). No throw: a retry cannot fix it.
-    const accountId = Number.isSafeInteger(payload.accountId) ? payload.accountId : undefined;
+  // Ids only: never the payload's content (the key may be the bad field). No throw: a retry cannot fix it.
+  const rejectPayload = (invalid: string) => {
+    const raw: unknown = typeof payload === 'object' && payload !== null ? payload.accountId : undefined;
+    const accountId = Number.isSafeInteger(raw) ? raw : undefined;
     deps.log.warn({ invalid, accountId }, 'event_delivery: invalid payload, dropped');
     deps.metrics.count('event_delivery_invalid_payload', 1);
-    return;
-  }
+  };
+  const invalid = invalidField(payload);
+  if (invalid !== null) return rejectPayload(invalid);
   const { type, accountId, occurredAt, occurrenceKey } = payload;
   // Truncated to whole seconds because the DATETIME columns (due_at, sent_at, created_at) store whole seconds.
   const occurred = truncateToSecond(new Date(occurredAt));
@@ -56,6 +91,8 @@ export const eventDelivery: (
   for (const n of notifications) {
     const delayDays = type === 'preenrollAudiobook' ? 0 : (n.delay ?? 0);
     const dueAt = new Date(occurred.getTime() + delayDays * DAY_MS);
+    // A due_at past the DATETIME range would fail the insert on every retry (a poison job): the payload is invalid.
+    if (!inRange(dueAt.getTime())) return rejectPayload('occurredAt');
     if (dueAt < earliest) {
       tooOld++;
       continue;
