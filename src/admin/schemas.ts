@@ -111,3 +111,13 @@ export const idParamSchema = z
   .regex(/^[1-9][0-9]{0,9}$/, 'id must be a positive integer')
   .transform(Number)
   .refine((n) => n <= 4294967295, 'id must be a positive integer');
+
+const UPDATE_BODY_MESSAGE = 'body must be exactly one of {"isActive": boolean} or {"isRemoved": true}';
+
+/** PATCH /admin/notifications/:id: exactly one of `isActive` (boolean) or `isRemoved` (literal true). */
+export const updateNotificationSchema = z.union(
+  [z.strictObject({ isActive: z.boolean() }), z.strictObject({ isRemoved: z.literal(true) })],
+  { errorMap: () => ({ message: UPDATE_BODY_MESSAGE }) },
+);
+
+export type UpdateNotificationBody = z.output<typeof updateNotificationSchema>;
