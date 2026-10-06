@@ -4,6 +4,7 @@ import { createLogger } from '../../src/lib/logger.js';
 import { testConfig, testDb } from './db.js';
 import { FixedClock } from './clock.js';
 import { FakeQueue } from './fakeQueue.js';
+import { HeaderAuthProvider } from '../../src/middleware/headerAuth.js';
 export class RecordingMetrics implements Metrics {
   calls: Array<{ kind: string; name: string; value: number; dims?: Dims }> = [];
   count(name: string, value = 1, dims?: Dims) {
@@ -30,13 +31,7 @@ export function makeTestDeps(o: Partial<Deps> = {}): Deps {
     config,
     clock: new FixedClock(),
     queue: new FakeQueue({ maxAttempts: config.jobMaxAttempts }),
-    auth: {
-      getSession: async (ctx: any) => {
-        const id = Number(ctx.get?.('x-account-id'));
-        return id > 0 ? { accountId: id } : null;
-      },
-      isAdmin: async (id: number) => config.adminAccountIds.includes(id),
-    },
+    auth: new HeaderAuthProvider(config.adminAccountIds),
     log: createLogger('silent'),
     metrics: new RecordingMetrics(),
     ...o,
