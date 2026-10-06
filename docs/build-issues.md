@@ -78,3 +78,23 @@ Running list of every place the build had to choose because the tech design (`do
 | 50 | §3.4 | The request type of `delay` is "optional integer" while the response is `integer \| null`. | `delay: null` in a request is a 400. | Confirmation |
 | 51 | §5 intro | `created_at` on notifications is a database default, but `activatedAt` must equal it for an active create and tests run on a fixed clock. | `created_at` is written from the application clock. | Confirmation |
 | 52 | §3.1 vs §9.4 | A replay returns "the original status code" in one place and "the endpoint's success status" in the other. | Both are 201 for these endpoints. | Confirmation |
+
+## U7 Filter sends
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 53 | §9.6 vs ground rules | §9.6 says "the rescan's eligibility reads" use the reader; the ground rules say "the fan-out's". Neither says what `account_recheck` reads from, and a lagging replica there would miss a just-changed account or send to one that is no longer eligible. | Only the fan-out's eligibility scans read the reader. `account_recheck` and the fan-out's active/removed re-checks read the writer. | Tech-design change |
+| 54 | §8.2 | "Advance `lo` by 10,000 until it passes `MAX(accounts.id)`" costs one iteration per empty range on a sparse id space and skips accounts created during the run. | The loop jumps to the next existing account id and scans a 10,000-id range from there; no maximum is read. | Tech-design change |
+| 55 | §8.2 | Active/removed is re-checked only after a range, so a deactivation could still let up to 10,000 more rows be written. | The writer is also re-checked immediately before each insert chunk. | Tech-design change |
+| 56 | B7, §5.4 | "Omitted or empty imposes no constraint", but nothing says what the eligibility builder does with a filters value that is not a usable object, an unknown key or an unknown value. | An empty array is no constraint. Anything unusable throws (fail closed): the fan-out fails and dead-letters, raising the alarm; the account recheck skips that one notification and continues. | Tech-design change |
+| 57 | §12 | "Active, non-removed filter notifications" was needed by the fan-out, the recheck, the rescan and housekeeping, across modules that may not import each other. | One shared query in `src/lib/filterNotifications.ts`. | Confirmation |
+| 58 | Ground rules | "Only `accountsSchema.ts` may name the accounts table's columns" does not exempt the foundation's row type or the insert helper's id lookup. | Both are treated as exempt. | Confirmation |
+
+## U9 Expiry
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 59 | §8.3, §5.3 | Expired rows are selected "ordered by `sent_at`, `id`", but no index serves that order. With row locks, every batch sorted and locked the whole expired backlog (measured: 6,000 locks for a 3-row batch). | Candidates are read without locks in `sent_at, due_at, id` order, which `idx_due_send` serves; only those rows are then locked by primary key. Oldest-first is preserved. The alternative is an index on `(sent_at, id)`. | Tech-design change |
+| 60 | §8.3 | Nothing says what an overlapping run does when another run holds rows, or what happens if an archive row with the same id already exists. | Locked rows are skipped; a run stops when a full candidate batch has nothing lockable, and the next daily run continues. A pre-existing archive row fails the batch and rolls it back. The run logs why it stopped (drained, budget, contended). | Confirmation |
+| 61 | §5.3, §13.5 | Account deletion cascades into deliveries and can deadlock with an expiry batch; the account delete is the one rolled back. | Documented in the code. Whatever deletes accounts must retry on deadlock. | Tech-design change |
+| 62 | §5.6 | `archived_at` has a database default, while every timestamp the design reasons about comes from the application clock. | `archived_at` is written from the application clock. | Confirmation |
