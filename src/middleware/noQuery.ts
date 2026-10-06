@@ -5,7 +5,10 @@ import { z } from 'zod';
 /** A query string with no permitted keys; `.strict()` raises zod's unrecognized-keys issue → 400 VALIDATION_ERROR. */
 const emptyQuery = z.object({}).strict();
 
-/** Route middleware: rejects any query-string key before headers or body are looked at. */
+/**
+ * Route middleware: rejects any query-string key before the multipart upload and handler. Mounted after the admin gate
+ * and, on routes that take one, after the Idempotency-Key check (§9.1: requireAdmin → [idempotencyKey] → validate).
+ */
 export function noQuery(): Middleware {
   return async (ctx, next) => {
     emptyQuery.parse(ctx.query);

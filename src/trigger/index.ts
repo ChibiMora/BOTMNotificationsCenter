@@ -8,7 +8,7 @@ import type { Deps } from '../lib/deps.js';
 import { createLogger } from '../lib/logger.js';
 import { emfMetrics } from '../lib/metrics.js';
 import { createQueue } from '../queue/index.js';
-import { EVENT_TRIGGERS as TRIGGERS, type EventTrigger } from '../queue/queue.js';
+import { EVENT_TRIGGERS as TRIGGERS, MAX_OCCURRENCE_KEY, type EventTrigger } from '../queue/queue.js';
 
 export type { EventTrigger } from '../queue/queue.js';
 
@@ -44,7 +44,11 @@ function validationError(e: EventFields): string | undefined {
   if (!(e.occurredAt instanceof Date)) return 'invalid occurredAt';
   const at = e.occurredAt.getTime();
   if (Number.isNaN(at) || at < MIN_OCCURRED_MS || at >= MAX_OCCURRED_MS) return 'invalid occurredAt';
-  if (typeof e.occurrenceKey !== 'string' || e.occurrenceKey.length < 1 || e.occurrenceKey.length > 128) {
+  if (
+    typeof e.occurrenceKey !== 'string' ||
+    e.occurrenceKey.length < 1 ||
+    e.occurrenceKey.length > MAX_OCCURRENCE_KEY
+  ) {
     return 'invalid occurrence key';
   }
   return undefined;
@@ -70,7 +74,7 @@ export class NotificationTrigger {
         occurrenceKey: event.occurrenceKey,
       };
       if (typeof fields.occurrenceKey === 'string')
-        context.occurrenceKey = fields.occurrenceKey.slice(0, 128);
+        context.occurrenceKey = fields.occurrenceKey.slice(0, MAX_OCCURRENCE_KEY);
       const invalid = validationError(fields);
       if (invalid) throw new Error(invalid);
       await this.deps.queue.enqueue('event_delivery', {

@@ -17,12 +17,12 @@ export function adminRouter(deps: Deps): Router {
   router.get('/notifications', (ctx) => listNotifications(deps, ctx));
   router.get('/notifications/imports/:id', noQuery(), (ctx) => getImport(deps, ctx));
   router.get('/notifications/:id', noQuery(), (ctx) => getNotification(deps, ctx));
-  router.post('/notifications/filter', noQuery(), idempotencyKey(), (ctx) => createFilter(deps, ctx));
-  router.post('/notifications/event', noQuery(), idempotencyKey(), (ctx) => createEvent(deps, ctx));
-  router.post('/notifications/imports', noQuery(), idempotencyKey(), importUpload(deps), (ctx) =>
+  router.post('/notifications/filter', idempotencyKey(), noQuery(), (ctx) => createFilter(deps, ctx));
+  router.post('/notifications/event', idempotencyKey(), noQuery(), (ctx) => createEvent(deps, ctx));
+  router.post('/notifications/imports', idempotencyKey(), noQuery(), importUpload(deps), (ctx) =>
     createImport(deps, ctx),
   );
-  router.post('/notifications/imports/:id/runs', noQuery(), idempotencyKey(), (ctx) =>
+  router.post('/notifications/imports/:id/runs', idempotencyKey(), noQuery(), (ctx) =>
     createImportRun(deps, ctx),
   );
   router.patch('/notifications/:id', noQuery(), (ctx) => updateNotification(deps, ctx));

@@ -8,6 +8,7 @@ import { systemClock } from './lib/clock.js';
 import type { Deps } from './lib/deps.js';
 import { createLogger } from './lib/logger.js';
 import { emfMetrics } from './lib/metrics.js';
+import { safeMetrics } from './lib/safeMetrics.js';
 import { createQueue } from './queue/index.js';
 import { jobHandlers, onDead } from './jobs/index.js';
 import { startScheduler, timers, type Timer } from './scheduler/index.js';
@@ -140,7 +141,8 @@ async function main() {
   const clock = systemClock;
   const db = createWriterDb(config);
   const dbReader = createReaderDb(config);
-  const metrics = emfMetrics(log, clock);
+  // Every consumer (handlers, housekeeping, queue) gets the safe sink (§9); DbQueue's own wrap is then a no-op.
+  const metrics = safeMetrics(emfMetrics(log, clock), log);
   const queue = createQueue(config, { db, clock, log, metrics });
   const auth = { getSession: async () => null, isAdmin: async () => false };
   const deps: Deps = { db, dbReader, config, clock, auth, queue, log, metrics };

@@ -6,6 +6,7 @@ import { loadConfig, type Config } from './config/index.js';
 import { createWriterDb, createReaderDb } from './db/index.js';
 import { createLogger } from './lib/logger.js';
 import { emfMetrics } from './lib/metrics.js';
+import { safeMetrics } from './lib/safeMetrics.js';
 import { systemClock } from './lib/clock.js';
 import type { Deps } from './lib/deps.js';
 import type { AuthProvider } from './middleware/auth.js';
@@ -40,7 +41,8 @@ export async function main(env: Record<string, string | undefined> = process.env
   const db = createWriterDb(config);
   const dbReader = createReaderDb(config);
   const clock = systemClock;
-  const metrics = emfMetrics(log, clock);
+  // Every consumer (handlers, housekeeping, queue) gets the safe sink (§9); DbQueue's own wrap is then a no-op.
+  const metrics = safeMetrics(emfMetrics(log, clock), log);
   const queue = selectQueue(config, { db, clock, log, metrics });
   const deps: Deps = { db, dbReader, config, clock, auth, queue, log, metrics };
   const server = createApp(deps).listen(config.port, () => log.info({ port: config.port }, 'api listening'));
