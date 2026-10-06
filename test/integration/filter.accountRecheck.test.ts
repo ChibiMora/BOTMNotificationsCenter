@@ -4,6 +4,7 @@ import { testDb, resetDb, updateAccount } from '../helpers/db.js';
 import type { Knex } from 'knex';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { makeNotification } from '../helpers/factories.js';
+import { FixedClock } from '../helpers/clock.js';
 import { accountRecheck, recheckAccount } from '../../src/jobs/accountRecheck.js';
 import { fanoutFilter } from '../../src/jobs/fanoutFilter.js';
 
@@ -16,6 +17,31 @@ const forAccount = (id: number) =>
 const json = (f: object) => JSON.stringify(f);
 
 describe('account_recheck', () => {
+  it('one call uses one instant and one month key, even when the clock crosses into the next month mid-call', async () => {
+    // Advances into November on its second reading.
+    class CrossingClock extends FixedClock {
+      readings = 0;
+      override now() {
+        if (++this.readings === 2) this.set('2026-11-01T00:00:00Z');
+        return super.now();
+      }
+    }
+    const clock = new CrossingClock(new Date('2026-10-31T23:59:59Z'));
+    const deps = makeTestDeps({ db, clock });
+    // Account 1 = US/monthly/new_member/0; three notifications that all match it.
+    for (const filters of [{}, { country: ['US'] }, { policy: ['monthly'] }]) {
+      await makeNotification(db, 'filter', { active: true, filters: json(filters) });
+    }
+    expect(await recheckAccount(deps, 1)).toBe(3);
+    const got = await forAccount(1);
+    expect(got).toHaveLength(3);
+    for (const r of got) {
+      expect(r.dedupe_key).toBe('2026-10');
+      expect(new Date(r.sent_at).toISOString()).toBe('2026-10-31T23:59:59.000Z');
+      expect(new Date(r.due_at).toISOString()).toBe('2026-10-31T23:59:59.000Z');
+    }
+  });
+
   it('a newly eligible account gets the delivery when the job runs, with no rescan; again adds nothing', async () => {
     const deps = makeTestDeps({ db });
     // Account 1 = US/monthly/new_member/0; the filter wants at least 5 credits.

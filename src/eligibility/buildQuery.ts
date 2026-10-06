@@ -1,4 +1,7 @@
-/** Eligibility query (§6.4, B7): one bound predicate per filter key present; `{}` and empty arrays match every account; malformed filters throw. */
+/**
+ * Eligibility query (§6.4, B7): one bound predicate per filter key present; `{}`, absent keys and empty arrays match
+ * every account; malformed filters (unknown keys, explicit nulls, bad values) throw.
+ */
 import type { Knex } from 'knex';
 import {
   ACCOUNTS_TABLE,
@@ -27,7 +30,17 @@ export class UnusableFiltersError extends Error {
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** API values → stored values; an absent or empty array means no constraint (undefined). Throws on anything else. */
+const FILTER_KEYS: ReadonlySet<string> = new Set(['country', 'policy', 'relationshipStatus', 'credits']);
+const CREDIT_KEYS: ReadonlySet<string> = new Set(['minimum', 'maximum']);
+
+/** Throws on any own key outside `known`: an unknown key would otherwise be dropped and widen the audience. */
+function onlyKnownKeys(o: Record<string, unknown>, known: ReadonlySet<string>, where: string): void {
+  if (Object.keys(o).some((k) => !known.has(k))) {
+    throw new UnusableFiltersError(`${where} has an unknown key`);
+  }
+}
+
+/** API values → stored values; an absent or empty array means no constraint (undefined). Throws on anything else, null included. */
 function storedValues(
   f: Record<string, unknown>,
   key: string,
@@ -53,8 +66,8 @@ function storedValues(
 
 function creditBound(credits: Record<string, unknown>, key: 'minimum' | 'maximum'): number | undefined {
   const v = credits[key];
-  if (v !== undefined && !Number.isInteger(v)) {
-    throw new UnusableFiltersError(`credits.${key} is not an integer`);
+  if (v !== undefined && !Number.isSafeInteger(v)) {
+    throw new UnusableFiltersError(`credits.${key} is not a safe integer`);
   }
   return v as number | undefined;
 }
@@ -64,13 +77,16 @@ export function eligibleAccounts(db: Knex, filters: unknown): Knex.QueryBuilder 
   if (!isPlainObject(filters)) {
     throw new UnusableFiltersError('not an object');
   }
+  onlyKnownKeys(filters, FILTER_KEYS, 'filters');
   const country = storedValues(filters, 'country', COUNTRY_VALUES);
   const policy = storedValues(filters, 'policy', POLICY_VALUES);
   const status = storedValues(filters, 'relationshipStatus', RELATIONSHIP_STATUS_VALUES);
-  const credits = filters.credits ?? {};
+  // Only an absent key means no constraint; an explicit null is unusable, like any other non-object.
+  const credits = filters.credits === undefined ? {} : filters.credits;
   if (!isPlainObject(credits)) {
     throw new UnusableFiltersError('credits is not an object');
   }
+  onlyKnownKeys(credits, CREDIT_KEYS, 'credits');
   const minimum = creditBound(credits, 'minimum');
   const maximum = creditBound(credits, 'maximum');
   const q = db(ACCOUNTS_TABLE).select(accountColumn('id'));
