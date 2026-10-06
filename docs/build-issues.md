@@ -137,3 +137,22 @@ Running list of every place the build had to choose because the tech design (`do
 | 84 | §8.3, §3.4 | Housekeeping deletes a failed import's file after 30 days, but a new run is still accepted afterwards. | The new run's job ends the run as `failed` ("import file missing") without retrying. | Tech-design change |
 | 85 | §3.4 | The runs endpoint does not say which check wins when an unknown import comes with a reused key, nor whether a request body must be rejected. | Order: replay → key reuse (400) → unknown import (404) → latest run not failed (409). A body is ignored. | Confirmation |
 | 86 | §7.3 | "Stream-parses the file" while the upload is held in memory. | The file is buffered (bounded by the larger of the configured cap and 10 MiB) and then parsed. | Confirmation |
+
+## U10 Ops
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 87 | §8.1, §5 | A job's heartbeat refreshes `locked_at`. Because connections report rows changed, not matched, and timestamps are whole seconds, a heartbeat in the same second as the claim or the previous heartbeat changed nothing and was read as "lease lost": healthy jobs were aborted (imports never completed through the real queue). Found by the end-to-end scenario tests; every earlier job test used the fake queue or advanced the clock. | On zero rows changed the heartbeat confirms ownership with a read under the same conditions and reports a lost lease only if that finds nothing. | Tech-design change |
+| 88 | §10.3, §12 | The nine scenario tests are listed under no implementation unit. | Assigned to U10; they live in `test/contract/scenario.*.test.ts` and run the real stand-in queue. Each ends by asserting the queue is idle. | Tech-design change |
+| 89 | §11.1 | The entry points are given as `dist/api.js` and `dist/worker.js`; the compiler's output layout puts them under `dist/src/`. One image serves two processes, but a single image health check can probe only one port. | Commands are `node dist/src/api.js` and `node dist/src/worker.js`. The health check probes `HEALTH_PORT`, else `PORT`; the worker service sets `HEALTH_PORT` to its health port. | Tech-design change |
+| 90 | §5.8, §11.2 | The migration runner records file names with their extension, so a database migrated from the TypeScript sources and one migrated by the built image were mutually "corrupt". The release step loaded the whole application config and refused to run under production settings. | Migration names are recorded without an extension. The database command needs only the database settings. Every database migrated before this change must be re-created. | Tech-design change |
+| 91 | §11.4, §11.5 | "An import processing for more than 1 hour" is an alarm with no metric in §11.4. Events dropped without a retry have metrics but no alarm. | Stated in `docs/metrics.md`; no metric or alarm was added. | Tech-design change |
+| 92 | §11.4 | "Deliveries created per account per day (p99 and max)" has no index to serve it and no stated place to compute it. | Housekeeping computes both in one query on the reader for the current UTC day, with a 5-second budget; on timeout the gauge is skipped and counted. The day's start is found by searching the primary key with a safety margin, so it is approximate when rows are far out of order. | Confirmation |
+| 93 | §11.4 | Metric names, the handling of health-check traffic and which outcomes a job can have are not specified. | Listed in full in `docs/metrics.md`. Health probes are labelled with their own routes. | Confirmation |
+| 94 | docs/spec.md | The README must explain the author's own workflow and judgement. | The factual sections are written; the workflow section holds a factual description of the process and a marked outline for the author. | Confirmation |
+
+## Test infrastructure
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 95 | §10.4 | Tests on a shared MySQL server: one test counted lock waits server-wide and failed when another database was busy; once, a test left a transaction open and every later reset waited a minute behind it (a ten-minute hang, not reproduced since). | Test queries on lock tables are scoped to the run's own database. The reset helper kills and names a leaked transaction and fails at once. Tests that hold transactions release them in `finally`. The cause of the one hang is probable (a test without clean-up on failure), not confirmed. | Confirmation |
