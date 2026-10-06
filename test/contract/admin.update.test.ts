@@ -114,8 +114,15 @@ describe('PATCH /admin/notifications/:id — 400 / 404 / 409 and check order', (
   it('401 without a session, 403 for a non-admin', async () => {
     const t = testApp({ db });
     const n = await makeNotification(db, 'filter');
-    expect((await patch(t, n.id, { isActive: true }, null)).status).toBe(401);
-    expect((await patch(t, n.id, { isActive: true }, '4')).status).toBe(403);
+    const before = await rowOf(n.id);
+    const r401 = await patch(t, n.id, { isActive: true }, null);
+    expect(r401.status).toBe(401);
+    expect(r401.body).toEqual({ error: 'UNAUTHORIZED' });
+    const r403 = await patch(t, n.id, { isActive: true }, '4');
+    expect(r403.status).toBe(403);
+    expect(r403.body).toEqual({ error: 'FORBIDDEN' });
+    expect(await rowOf(n.id)).toEqual(before);
+    expect(jobs(t)).toEqual([]);
   });
 });
 
@@ -233,6 +240,7 @@ describe('PATCH /admin/notifications/:id — applying', () => {
     const ra = await patch(t, a.id, { isRemoved: true });
     expect(ra.status).toBe(200);
     expect(ra.body).toMatchObject({ isActive: false, isRemoved: true });
+    expect((await rowOf(a.id)).cancelled_before).toEqual(sec(t.clock.now()));
     const rc = await patch(t, c.id, { isRemoved: true });
     expect(rc.status).toBe(200);
     expect(rc.body).toMatchObject({ type: 'csv', isActive: false, isRemoved: true });
@@ -334,4 +342,140 @@ describe('PATCH /admin/notifications/:id — applying', () => {
     expect(row.active).toBeFalsy();
     expect(row.cancelled_before).toEqual(sec(t.clock.now()));
   });
+});
+
+describe('PATCH /admin/notifications/:id — cancelled_before alone decides', () => {
+  it('a delivery scheduled before a deactivation is deleted, not sent, after reactivation (notification active)', async () => {
+    const t = testApp({ db });
+    const t0 = t.clock.now();
+    const n = await makeNotification(db, 'filter', { active: true, went_live_at: t0 });
+    const due = new Date(t0.getTime() + HOUR);
+    const old = await makeDelivery(
+      db,
+      { notification_id: n.id, account_id: 4, due_at: due },
+      new Date(t0.getTime() - HOUR),
+    );
+    expect((await patch(t, n.id, { isActive: false })).status).toBe(200);
+    t.clock.advance(1000);
+    expect((await patch(t, n.id, { isActive: true })).status).toBe(200);
+    expect(await rowOf(n.id)).toMatchObject({ active: 1, removed: 0 });
+    t.clock.advance(1000);
+    // Control: created after cancelled_before on the same active notification, so it must be released.
+    const fresh = await makeDelivery(
+      db,
+      { notification_id: n.id, account_id: 5, due_at: due },
+      t.clock.now(),
+    );
+    t.clock.advance(2 * HOUR);
+    await runDueSend(t);
+    const after = await deliveriesOf(n.id);
+    expect(after.find((d) => d.id === old.id)).toBeUndefined();
+    expect(after.map((d) => d.id)).toEqual([fresh.id]);
+    expect(after[0].sent_at).toEqual(sec(t.clock.now()));
+    expect(await rowOf(n.id)).toMatchObject({ active: 1, removed: 0, cancelled_before: sec(t0) });
+  });
+
+  it('removing a deactivated notification moves cancelled_before forward to the removal instant', async () => {
+    const t = testApp({ db });
+    const n = await makeNotification(db, 'filter', { active: true, went_live_at: t.clock.now() });
+    const t0 = t.clock.now();
+    expect((await patch(t, n.id, { isActive: false })).status).toBe(200);
+    expect((await rowOf(n.id)).cancelled_before).toEqual(sec(t0));
+    t.clock.advance(11_000);
+    expect((await patch(t, n.id, { isRemoved: true })).status).toBe(200);
+    const row = await rowOf(n.id);
+    expect(row).toMatchObject({ removed: 1, active: 0 });
+    expect(row.cancelled_before).toEqual(sec(t.clock.now()));
+    expect(row.cancelled_before.getTime()).toBe(sec(t0).getTime() + 11_000);
+  });
+
+  it('a second deactivation after a reactivation moves cancelled_before forward and cancels rows created in between', async () => {
+    const t = testApp({ db });
+    const t0 = t.clock.now();
+    const n = await makeNotification(db, 'filter', { active: true, went_live_at: t0 });
+    const due = new Date(t0.getTime() + HOUR);
+    expect((await patch(t, n.id, { isActive: false })).status).toBe(200);
+    t.clock.advance(5000);
+    expect((await patch(t, n.id, { isActive: true })).status).toBe(200);
+    t.clock.advance(3000);
+    const between = await makeDelivery(
+      db,
+      { notification_id: n.id, account_id: 4, due_at: due },
+      t.clock.now(),
+    );
+    t.clock.advance(3000);
+    expect((await patch(t, n.id, { isActive: false })).status).toBe(200);
+    const row = await rowOf(n.id);
+    expect(row.cancelled_before).toEqual(sec(t.clock.now()));
+    expect(row.cancelled_before.getTime()).toBe(sec(t0).getTime() + 11_000);
+    t.clock.advance(1000);
+    expect((await patch(t, n.id, { isActive: true })).status).toBe(200);
+    t.clock.advance(1000);
+    const fresh = await makeDelivery(
+      db,
+      { notification_id: n.id, account_id: 5, due_at: due },
+      t.clock.now(),
+    );
+    t.clock.advance(2 * HOUR);
+    await runDueSend(t);
+    const after = await deliveriesOf(n.id);
+    expect(after.find((d) => d.id === between.id)).toBeUndefined();
+    expect(after.map((d) => d.id)).toEqual([fresh.id]);
+    expect(after[0].sent_at).toEqual(sec(t.clock.now()));
+  });
+});
+
+describe('PATCH /admin/notifications/:id — mixed concurrent updates', () => {
+  const MIX: unknown[] = [
+    { isActive: true },
+    { isActive: false },
+    { isRemoved: true },
+    { isActive: true },
+    { isActive: false },
+  ];
+  for (const type of ['filter', 'event'] as const) {
+    it(`${type}: 20 rounds of concurrent activate/deactivate/remove keep the row and jobs consistent`, async () => {
+      const t = testApp({ db });
+      for (let round = 0; round < 20; round++) {
+        const startActive = round % 2 === 0;
+        const n = await makeNotification(db, type, {
+          active: startActive,
+          went_live_at: startActive ? t.clock.now() : null,
+          cancelled_before: startActive ? null : new Date('2026-09-01T00:00:00Z'),
+        });
+        const initial = await rowOf(n.id);
+        const bodies = MIX.map((_, i) => MIX[(i + round) % MIX.length]);
+        const res = await Promise.all(bodies.map((b) => patch(t, n.id, b)));
+        const ok = (pred: (b: Record<string, unknown>) => boolean) =>
+          res.filter((r, i) => r.status === 200 && pred(bodies[i] as Record<string, unknown>)).length;
+        for (const r of res) expect([200, 409], JSON.stringify(r.body)).toContain(r.status);
+        const row = await rowOf(n.id);
+        const mine = jobs(t).filter(
+          (j) => (j.payload as { notificationId?: number }).notificationId === n.id,
+        );
+        const cancels = mine.filter((j) => j.type === 'cancel_scheduled').length;
+        const fanouts = mine.filter((j) => j.type === 'fanout_filter').length;
+        const removes = ok((b) => b.isRemoved === true);
+        // Row invariants.
+        if (row.removed) expect(row.active).toBeFalsy();
+        expect(Boolean(row.removed)).toBe(removes === 1);
+        expect(removes).toBeLessThanOrEqual(1);
+        if (row.removed || !row.active) expect(row.cancelled_before).not.toBeNull();
+        if (row.active) expect(row.went_live_at).not.toBeNull();
+        // Job invariants: never more jobs than applied-capable 200s, at least one per observed change.
+        expect(cancels).toBeLessThanOrEqual(ok((b) => b.isActive === false) + removes);
+        expect(cancels).toBeGreaterThanOrEqual(removes);
+        expect(fanouts).toBeLessThanOrEqual(ok((b) => b.isActive === true));
+        if (type === 'event') expect(fanouts).toBe(0);
+        if (!initial.active && row.active && type === 'filter') expect(fanouts).toBeGreaterThanOrEqual(1);
+        if (initial.active && !row.active) expect(cancels).toBeGreaterThanOrEqual(1);
+        if (mine.length > 0) expect(row).not.toEqual(initial);
+        // A removal that applied is never undone: every later request on this row is a 409.
+        if (row.removed) {
+          const again = await patch(t, n.id, { isActive: true });
+          expect(again.status).toBe(409);
+        }
+      }
+    });
+  }
 });
