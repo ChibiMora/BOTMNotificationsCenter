@@ -31,4 +31,19 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -t notification-center:ci .
       - name: image refuses to start without configuration
-        run: '! docker run --rm notification-center:ci'
+        # Non-zero exit within 30 s AND the output names the missing setting (a broken dist layout fails this).
+        run: |
+          set +e
+          out=$(timeout 30 docker run --rm notification-center:ci 2>&1); code=$?
+          set -e
+          echo "$out"
+          test "$code" -ne 0 && test "$code" -ne 124
+          echo "$out" | grep -q 'DATABASE_URL'
+      - name: release-step script is present and prints its usage
+        run: |
+          set +e
+          out=$(timeout 30 docker run --rm notification-center:ci node dist/scripts/db.js 2>&1); code=$?
+          set -e
+          echo "$out"
+          test "$code" -eq 2
+          echo "$out" | grep -q 'usage: db create|migrate|drop <name>'

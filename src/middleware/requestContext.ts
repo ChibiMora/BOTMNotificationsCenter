@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type Koa from 'koa';
 import type { Deps } from '../lib/deps.js';
 
+const PROBES = new Set(['/healthz', '/readyz']);
 export function requestContext(
   deps: Pick<Deps, 'log' | 'clock'> & Partial<Pick<Deps, 'metrics'>>,
 ): Koa.Middleware {
@@ -31,7 +32,8 @@ export function requestContext(
         'request',
       );
       // §11.4: the route TEMPLATE (never the concrete URL, which carries ids) keeps cardinality low.
-      const route = matched ?? 'unmatched';
+      // Probes (/healthz, /readyz, mounted outside the router) get their own fixed labels, not `unmatched`.
+      const route = matched ?? (PROBES.has(ctx.path) ? ctx.path : 'unmatched');
       const status = String(ctx.status);
       deps.metrics?.count('http_requests', 1, { method: ctx.method, route, status });
       deps.metrics?.timing('http_request_duration_ms', durationMs, { method: ctx.method, route, status });

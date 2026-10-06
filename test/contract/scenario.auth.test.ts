@@ -59,6 +59,7 @@ describe('scenario: authorization', () => {
 
     // 2. Ids member 8 may not see: another member's delivery, its own unsent (scheduled) one, a removed one, nonsense.
     const others = (await s.member(9))[0]!.id;
+    // Read from the database: no API exposes an unsent delivery's id.
     const pub = async (headline: string, acct: number) =>
       (
         await db('notification_deliveries as d')
@@ -69,6 +70,7 @@ describe('scenario: authorization', () => {
     const scheduled = await pub('Later', 8);
     const removed = (await s.member(8)).find((i) => i.headline === 'Mine')!.id;
     expect((await s.admin.patch(nid, { isRemoved: true })).status).toBe(200);
+    await s.runWorker(); // the remove enqueues cancel_scheduled
     expect(event.status).toBe(201);
 
     const bodies: unknown[] = [];
@@ -82,5 +84,6 @@ describe('scenario: authorization', () => {
       bodies.push(g.body, p.body);
     }
     for (const b of bodies) expect(b).toEqual(bodies[0]);
+    await s.expectQueueIdle();
   });
 });

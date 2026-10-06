@@ -117,13 +117,16 @@ export function healthHandler(
       return;
     }
     if (req.url === '/readyz') {
+      // Not ready while shutting down gracefully is expected (every deploy): only a failed ping is counted.
       const ok =
         isReady() &&
         (await db.raw('SELECT 1').then(
           () => true,
-          () => false,
+          () => {
+            metrics?.count('readiness_failed', 1, { process: 'worker' });
+            return false;
+          },
         ));
-      if (!ok) metrics?.count('readiness_failed', 1, { process: 'worker' });
       res.writeHead(ok ? 200 : 503).end(ok ? 'ready' : 'not ready');
       return;
     }

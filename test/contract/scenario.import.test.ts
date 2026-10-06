@@ -53,61 +53,87 @@ describe('scenario: CSV import', () => {
     const past = await s.admin.upload({ ...content('Late'), liveDate: '2026-10-05T14:00:00Z' }, CSV);
     expect(past.status).toBe(400);
     expect(JSON.stringify(past.body)).toContain('liveDate must be in the future');
+    await s.expectQueueIdle();
   });
 });
 
 describe('scenario: import failure and retry', () => {
-  // DEFECT: same heartbeat lease-lost defect as above blocks the retried run from completing.
-  it('dead-letters to failed, a new run completes, and no member gets two rows', async () => {
+  it('a run that fails mid-file dead-letters to failed, a new run completes, and no member gets two rows', async () => {
+    // While `failing`, process_import throws right after its first chunk ([4, 5]) is written: a partial run.
     let failing = true;
     const s = await scenario(db, {
       config: { importChunk: 2 },
       handlers: (real) => ({
         ...real,
-        process_import: async (payload, ctx) => {
-          if (failing) throw new Error('injected chunk failure');
-          return real.process_import(payload, ctx);
-        },
+        process_import: (payload, ctx) =>
+          real.process_import(payload, {
+            ...ctx,
+            heartbeat: async () => {
+              await ctx.heartbeat();
+              if (failing) throw new Error('injected failure after the first chunk');
+            },
+          }),
       }),
     });
 
-    // 1. Upload; every attempt fails until the job is dead-lettered (the clock passes each backoff).
+    // 1. Upload; every attempt fails after chunk 1 until the job is dead-lettered (the clock passes each backoff).
     const up = await s.admin.upload({ ...content('Retried'), liveDate: TOMORROW }, CSV);
     expect(up.status).toBe(202);
     for (let i = 0; i < s.deps.config.jobMaxAttempts; i++) {
-      await s.runWorker();
+      await s.runWorker({ expectRetry: true });
       s.clock.advance(DAY / 24);
     }
     await s.runWorker();
     expect((await s.admin.getImport(up.body.id)).body.status).toBe('failed');
+    expect(await db('jobs').where({ type: 'process_import' }).first('status', 'attempts')).toEqual({
+      status: 'dead',
+      attempts: s.deps.config.jobMaxAttempts,
+    });
 
-    // 2. Admin starts a new run; the worker completes it.
+    // The first chunk's deliveries were written, scheduled (unsent) and invisible to members; the rest were not.
+    const partial = await db('notification_deliveries').orderBy('account_id').select('account_id', 'sent_at');
+    expect(partial).toEqual([
+      { account_id: 4, sent_at: null },
+      { account_id: 5, sent_at: null },
+    ]);
+    expect(await s.seenBy('Retried', LISTED)).toEqual([]);
+
+    // 2. Admin starts a new run; the worker completes it and the report reconciles.
     failing = false;
     const run = await s.admin.rerun(up.body.id);
     expect(run.status).toBe(202);
     await s.runWorker();
-    expect((await s.admin.getImport(up.body.id)).body).toMatchObject({ status: 'completed', accepted: 3 });
+    const rep = (await s.admin.getImport(up.body.id)).body;
+    expect(rep).toMatchObject({ status: 'completed', totalRows: 5, accepted: 3, duplicatesIgnored: 1 });
+    expect(rep.totalRows).toBe(rep.accepted + rep.duplicatesIgnored + rep.errors.length);
 
-    // 3. Released: each listed member has exactly one row.
+    // 3. Exactly one delivery row per listed member, and none for anyone else.
+    const rows = (await db('notification_deliveries')
+      .select('account_id')
+      .count({ n: '*' })
+      .groupBy('account_id')
+      .orderBy('account_id')) as { account_id: number; n: number | string }[];
+    expect(rows.map((r) => [Number(r.account_id), Number(r.n)])).toEqual(LISTED.map((id) => [id, 1]));
+
+    // 4. Released: each listed member sees exactly one item.
     s.clock.set('2026-10-05T14:31:00Z');
     await dueSendTimer(s.deps).run(s.deps);
     await s.runWorker();
-    for (const id of LISTED) expect(await s.member(id)).toHaveLength(1);
-    const rows = await db('notification_deliveries')
-      .select('account_id')
-      .count({ n: '*' })
-      .groupBy('account_id');
-    expect(rows.every((r) => Number(r.n) === 1)).toBe(true);
+    for (const id of LISTED)
+      expect(await s.member(id)).toEqual([expect.objectContaining({ headline: 'Retried' })]);
+    expect(await s.seenBy('Retried')).toEqual(LISTED);
+    await s.expectQueueIdle({ allowDead: ['process_import'] }); // the first run's dead-lettered job
   });
 });
 
 describe('scenario: CSV import, past liveDate', () => {
-  // Step 5 of the CSV scenario on its own, so it stays verified while the scenario above is blocked by the defect.
+  // A focused check of the past-liveDate refusal: nothing is stored for a refused upload.
   it('refuses an upload whose liveDate is not in the future with the explained 400', async () => {
     const s = await scenario(db);
     const past = await s.admin.upload({ ...content('Late'), liveDate: '2026-10-04T14:00:00Z' }, CSV);
     expect(past.status).toBe(400);
     expect(JSON.stringify(past.body)).toContain('liveDate must be in the future');
     expect(await db('imports').count({ n: '*' }).first()).toEqual({ n: 0 });
+    await s.expectQueueIdle();
   });
 });

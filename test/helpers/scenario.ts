@@ -4,6 +4,7 @@
  *
  *   const s = await scenario(db);      // db from testDb(), destroyed by the test file in afterAll
  *   await s.runWorker();               // steps the queue until nothing is runnable at the current clock
+ *   await s.expectQueueIdle();         // at the end of every scenario: nothing queued/running/dead
  *   await s.member(23);                // GET /notifications as account 23 -> items
  */
 import { randomUUID } from 'node:crypto';
@@ -50,17 +51,47 @@ export async function scenario(db: Knex, opts: ScenarioOptions = {}) {
   const deps = t.deps;
   const real = jobHandlers(deps);
   await queue.consume(opts.handlers ? opts.handlers(real) : real, { onDead: onDead(deps) });
+  // The source exports no type for the manually stepped queue (DbQueue's runOnce() is public but createQueue returns
+  // the Queue interface), so the cast stays.
   const step = () => (queue as unknown as { runOnce(): Promise<number> }).runOnce();
 
-  /** Steps the worker until no job is runnable now; a cap makes a runaway loop fail fast instead of hanging. */
-  const runWorker = async (cap = 200) => {
+  /** Jobs in the given states, for failure messages and the idle check. */
+  const jobRows = (statuses: string[]) =>
+    db('jobs')
+      .whereIn('status', statuses)
+      .select('id', 'type', 'status', 'attempts', 'last_error') as Promise<
+      { id: number; type: string; status: string; attempts: number; last_error: string | null }[]
+    >;
+
+  /**
+   * Steps the worker until no job is runnable now; a cap makes a runaway loop fail fast instead of hanging. Then fails
+   * if a job failed and is waiting on its retry backoff (queued with attempts > 0), unless `expectRetry` says a failure
+   * is expected.
+   */
+  const runWorker = async (opts: { cap?: number; expectRetry?: boolean } = {}) => {
+    const cap = opts.cap ?? 200;
     let ran = 0;
     for (;;) {
       const n = await step();
-      if (n === 0) return ran;
+      if (n === 0) break;
       ran += n;
       if (ran > cap) throw new Error(`runWorker: more than ${cap} jobs ran; runaway loop?`);
     }
+    if (!opts.expectRetry) {
+      const retrying = (await jobRows(['queued'])).filter((j) => j.attempts > 0);
+      if (retrying.length > 0)
+        throw new Error(`runWorker: job(s) failed and are waiting to retry: ${JSON.stringify(retrying)}`);
+    }
+    return ran;
+  };
+
+  /** Asserts nothing is queued or running and nothing is dead except the job types in `allowDead`. */
+  const expectQueueIdle = async (opts: { allowDead?: string[] } = {}) => {
+    const allow = new Set(opts.allowDead ?? []);
+    const bad = (await jobRows(['queued', 'running', 'dead'])).filter(
+      (j) => j.status !== 'dead' || !allow.has(j.type),
+    );
+    if (bad.length > 0) throw new Error(`expectQueueIdle: jobs not idle: ${JSON.stringify(bad)}`);
   };
 
   const as = (id: number) => String(id);
@@ -115,7 +146,7 @@ export async function scenario(db: Knex, opts: ScenarioOptions = {}) {
 
   const trigger = new NotificationTrigger({ queue: deps.queue, log: deps.log, metrics: deps.metrics });
 
-  return { ...t, deps, clock, queue, runWorker, admin, member, seenBy, trigger, as };
+  return { ...t, deps, clock, queue, runWorker, expectQueueIdle, admin, member, seenBy, trigger, as };
 }
 
 export const content = (headline: string) => ({

@@ -85,7 +85,16 @@ function withDb(url: string, name: string | undefined): string {
 export function loadConfig(env: Record<string, string | undefined>) {
   // An empty value is treated as unset, so the default applies.
   const cleaned = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, v === '' ? undefined : v]));
-  const e = schema.parse(cleaned);
+  const parsed = schema.safeParse(cleaned);
+  // One line per missing/invalid variable (no ZodError JSON dump).
+  if (!parsed.success)
+    throw new Error(
+      [
+        'invalid configuration:',
+        ...parsed.error.issues.map((i) => `  ${i.path.join('.') || '(root)'}: ${i.message}`),
+      ].join('\n'),
+    );
+  const e = parsed.data;
   const production = e.NODE_ENV === 'production';
   if (production && e.STANDINS) throw new Error('STANDINS=true is refused in production');
   if (production && e.AUTH_IMPL === 'header')

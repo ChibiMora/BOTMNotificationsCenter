@@ -62,6 +62,8 @@ describe('scenario: event with delay', () => {
     await dueSendTimer(s.deps).run(s.deps);
     expect(await s.member(7)).toHaveLength(2);
     expect(await s.seenBy('Shipped')).toEqual([7]);
+    await s.runWorker();
+    await s.expectQueueIdle();
   });
 });
 
@@ -85,6 +87,7 @@ describe('scenario: pre-order', () => {
     expect(await s.member(9)).toEqual([
       expect.objectContaining({ headline: 'Preorder', isClicked: false, liveDate: '2026-10-04T14:30:00Z' }),
     ]);
+    await s.expectQueueIdle();
   });
 });
 
@@ -133,6 +136,8 @@ describe('scenario: deactivate while pending', () => {
     s.clock.advance(2 * DAY);
     await dueSendTimer(s.deps).run(s.deps);
     expect(await s.member(8)).toEqual([expect.objectContaining({ headline: 'Paused' })]);
+    await s.runWorker();
+    await s.expectQueueIdle();
   });
 });
 
@@ -156,5 +161,7 @@ describe('scenario: visibility window', () => {
     expect(await s.member(10)).toHaveLength(1);
     s.clock.set('2026-12-01T00:00:00Z'); // first second of the month after: gone
     expect(await s.member(10)).toEqual([]);
+    await s.runWorker();
+    await s.expectQueueIdle();
   });
 });

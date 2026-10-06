@@ -42,11 +42,24 @@ never account ids, notification ids, public ids, request paths, tokens, notifica
 | `expiry_run_stopped`                 | count  | `reason`                                                                          | `src/scheduler/expiry.ts`                                     | expiry run cut short                         |
 | `deliveries_per_account_day_max`     | gauge  | none                                                                              | `src/scheduler/housekeeping.ts`                               | §11.4 deliveries per account per day (abuse) |
 | `deliveries_per_account_day_p99`     | gauge  | none                                                                              | `src/scheduler/housekeeping.ts`                               | §11.4 deliveries per account per day (abuse) |
+| `deliveries_per_account_day_skipped` | count  | none                                                                              | `src/scheduler/housekeeping.ts`                               | §11.4 deliveries per account per day (abuse) |
 
-`deliveries_per_account_day_*` cover the current UTC day up to the housekeeping run. `notification_deliveries` has no
-`created_at` index and no migration was added: the first id created today is found by a binary search over the primary
-key (about log2(rows) point lookups, relying on `created_at` rising with `id`), then only today's id range is scanned
-and grouped by account. Cost grows with today's deliveries, not with the table.
+`deliveries_per_account_day_*` cover the current UTC day up to the housekeeping run, read through the **reader**
+(`DATABASE_READER_URL`). `notification_deliveries` has no `created_at` index and no migration was added: the first id
+created today is approximated by a binary search over the primary key (about log2(rows) point lookups), then the scan
+starts `DAY_START_ID_MARGIN` (100 000) ids earlier and filters `created_at >= dayStart` inside the range, so rows that
+concurrent writers committed out of `created_at` order around midnight are still counted. Both numbers are computed in
+SQL (per-account counts in a derived table, nearest-rank p99 with `ROW_NUMBER()` / `COUNT(*) OVER ()`), so one row
+comes back whatever the number of accounts. Cost grows with today's deliveries (+ at most the margin), not the table.
+The query carries `MAX_EXECUTION_TIME(5000)`; on a timeout (MySQL error 3024) the gauges are not emitted that run,
+a warn line is logged and `deliveries_per_account_day_skipped` (count, no dimensions) is incremented — housekeeping
+itself never fails because of it. With no deliveries today both gauges are emitted as 0.
+
+`/healthz` and `/readyz` carry their own fixed `route` values (`/healthz`, `/readyz`) in `http_requests`,
+`http_request_duration_ms` and `http_5xx`, so probe traffic does not dominate `unmatched`. The worker counts
+`readiness_failed{process=worker}` only when its database ping fails, not while it is shutting down gracefully.
+
+`job_duration_ms` no longer carries `outcome`; the outcome is on `job_outcome`.
 
 ## §11.5 alarms
 

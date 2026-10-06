@@ -22,7 +22,7 @@ describe('API metrics', () => {
       dims: { process: 'api' },
     });
     expect(m.calls).toContainEqual(
-      expect.objectContaining({ name: 'http_5xx', dims: { route: 'unmatched', status: '503' } }),
+      expect.objectContaining({ name: 'http_5xx', dims: { route: '/readyz', status: '503' } }),
     );
   });
 

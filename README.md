@@ -16,14 +16,14 @@ Three stand-ins replace systems this service does not own, so it runs end to end
 
 ## Documents
 
-| File | Purpose |
-|------|---------|
-| [`docs/spec.md`](docs/spec.md) | Product and engineering requirements. Source of truth; wins any disagreement. |
-| [`docs/design-draft.md`](docs/design-draft.md) | Original design draft that the review started from. Kept as-is for history. |
-| [`docs/architecture.md`](docs/architecture.md) | Reviewed architecture: requirements (R#), decisions and assumptions (A#), API contracts, data model. Historical record of the design-review phase. |
+| File                                             | Purpose                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`docs/spec.md`](docs/spec.md)                   | Product and engineering requirements. Source of truth; wins any disagreement.                                                                                                                                                                                                            |
+| [`docs/design-draft.md`](docs/design-draft.md)   | Original design draft that the review started from. Kept as-is for history.                                                                                                                                                                                                              |
+| [`docs/architecture.md`](docs/architecture.md)   | Reviewed architecture: requirements (R#), decisions and assumptions (A#), API contracts, data model. Historical record of the design-review phase.                                                                                                                                       |
 | [`docs/tech-design.html`](docs/tech-design.html) | Standalone technical design. Open it in a browser: behaviour rules, full API contracts, schema, module layout, core-flow and lifecycle diagrams, background jobs, testing strategy, implementation units, and the decision register. This is the document the implementation works from. |
-| [`docs/build-issues.md`](docs/build-issues.md) | Every place the build found the design silent, ambiguous or wrong, the choice made for each, and what is needed to close it. |
-| [`docs/metrics.md`](docs/metrics.md) | Every metric the service emits and the alarms it serves. |
+| [`docs/build-issues.md`](docs/build-issues.md)   | Every place the build found the design silent, ambiguous or wrong, the choice made for each, and what is needed to close it.                                                                                                                                                             |
+| [`docs/metrics.md`](docs/metrics.md)             | Every metric the service emits and the alarms it serves.                                                                                                                                                                                                                                 |
 
 Reading order:
 
@@ -65,6 +65,14 @@ WORKER_HEALTH_PORT=3001 npx tsx src/worker.ts   # queue consumer + scheduler; he
 
 Built form: `npm run build`, then `node dist/src/api.js` and `node dist/src/worker.js`; `node dist/scripts/db.js migrate <DB_NAME>` runs migrations as a release step. The `Dockerfile` builds one image for both processes; its default command is the API.
 
+Deployment: migrations are forward-only (expand → migrate → contract: add columns/tables first, deploy code that uses
+them, remove the old ones in a later release); rollback is redeploying the previous image, never a down-migration. The
+release step `node dist/scripts/db.js migrate <DB_NAME>` needs only the database settings (`DATABASE_URL`; the argument
+names the database) — no application settings — and refuses `STANDINS=true` under `NODE_ENV=production`. Migrations
+are recorded by extension-less name, so a database migrated from the `.ts` sources and one migrated by the image agree.
+The image's HEALTHCHECK probes `HEALTH_PORT`, else `PORT`, else 3000; the worker service must set
+`HEALTH_PORT=$WORKER_HEALTH_PORT` (default 3001) or override the healthcheck.
+
 ### Examples
 
 Responses below are real, trimmed. Create a filter notification as admin 1:
@@ -75,6 +83,7 @@ curl -s -X POST localhost:3000/admin/notifications/filter \
   -H 'Idempotency-Key: 6f1c2b6e-4d0a-4c55-9a43-2f6d1b7e9c01' \
   -d '{"image":"/img/fall-picks.png","headline":"Fall picks are here","subheadline":"Five new books this month","link":"/books/fall","isActive":true,"filters":{"country":["US"],"policy":["monthly"]}}'
 ```
+
 ```
 201 {"id":1,"type":"filter","image":"https://assets.example.com/img/fall-picks.png","headline":"Fall picks are here",
      "link":"https://www.example.com/books/fall","isActive":true,"isRemoved":false,
@@ -86,6 +95,7 @@ A few seconds later (the worker does the fan-out), list as a matching member:
 ```sh
 curl -s localhost:3000/notifications -H 'X-Account-Id: 4'
 ```
+
 ```
 200 {"items":[{"id":"dl_L7b1vLlbutXS","headline":"Fall picks are here","subheadline":"Five new books this month",
      "isClicked":false,"liveDate":"2026-10-06T10:18:03Z"}],"nextCursor":null}
@@ -97,6 +107,7 @@ Mark it clicked (use the `id` from your own list):
 curl -s -X PATCH localhost:3000/notifications/dl_L7b1vLlbutXS \
   -H 'Content-Type: application/json' -H 'X-Account-Id: 4' -d '{"isClicked":true}'
 ```
+
 ```
 200 {"id":"dl_L7b1vLlbutXS", ..., "liveDate":"2026-10-06T10:18:03Z","isClicked":true}
 ```
@@ -108,6 +119,7 @@ curl -s -w ' %{http_code}\n' -X POST localhost:3000/admin/notifications/filter \
   -H 'Content-Type: application/json' -H 'X-Account-Id: 4' \
   -H 'Idempotency-Key: 6f1c2b6e-4d0a-4c55-9a43-2f6d1b7e9c02' -d '{}'
 ```
+
 ```
 {"error":"FORBIDDEN"} 403
 ```

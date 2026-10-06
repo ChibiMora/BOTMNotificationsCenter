@@ -61,6 +61,8 @@ describe('scenario: filter campaign', () => {
     // 6. Admin removes it: every member's list is empty of it on the next request.
     expect((await s.admin.patch(notificationId, { isRemoved: true })).status).toBe(200);
     expect(await s.seenBy('Annual picks')).toEqual([]);
+    await s.runWorker(); // the remove enqueues cancel_scheduled
+    await s.expectQueueIdle();
   });
 });
 
@@ -80,5 +82,6 @@ describe('scenario: account change', () => {
     expect(await s.seenBy('Annual picks')).toEqual([22, ...MATCHING].sort((a, b) => a - b));
     const after = await db('notification_deliveries').count({ n: '*' }).first();
     expect(Number(after!.n)).toBe(Number(before!.n) + 1);
+    await s.expectQueueIdle();
   });
 });
