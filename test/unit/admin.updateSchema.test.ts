@@ -2,6 +2,8 @@
 import { describe, it, expect } from 'vitest';
 import { updateNotificationSchema } from '../../src/admin/schemas.js';
 
+const MESSAGE = 'body must be exactly one of {"isActive": boolean} or {"isRemoved": true}';
+
 describe('updateNotificationSchema', () => {
   it('accepts exactly one of isActive (boolean) or isRemoved (literal true)', () => {
     expect(updateNotificationSchema.parse({ isActive: true })).toEqual({ isActive: true });
@@ -26,6 +28,10 @@ describe('updateNotificationSchema', () => {
     ['undefined', undefined],
     ['a string', 'isActive'],
   ])('rejects %s', (_name, body) => {
-    expect(updateNotificationSchema.safeParse(body).success).toBe(false);
+    const r = updateNotificationSchema.safeParse(body);
+    expect(r.success).toBe(false);
+    // The error mapper reports the first issue's message; every issue carries the endpoint's own message.
+    expect(r.error!.issues[0]!.message).toBe(MESSAGE);
+    expect(r.error!.issues.map((i) => i.message)).toEqual(r.error!.issues.map(() => MESSAGE));
   });
 });

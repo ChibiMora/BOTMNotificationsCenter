@@ -114,10 +114,18 @@ export const idParamSchema = z
 
 const UPDATE_BODY_MESSAGE = 'body must be exactly one of {"isActive": boolean} or {"isRemoved": true}';
 
-/** PATCH /admin/notifications/:id: exactly one of `isActive` (boolean) or `isRemoved` (literal true). */
+/**
+ * PATCH /admin/notifications/:id: exactly one of `isActive` (boolean) or `isRemoved` (literal true).
+ * Every bad shape reports UPDATE_BODY_MESSAGE: zod returns a strict object's unrecognized-keys issue
+ * directly (not as a union failure), so each option carries the same error map as the union.
+ */
+const updateBodyErrors = { errorMap: () => ({ message: UPDATE_BODY_MESSAGE }) };
 export const updateNotificationSchema = z.union(
-  [z.strictObject({ isActive: z.boolean() }), z.strictObject({ isRemoved: z.literal(true) })],
-  { errorMap: () => ({ message: UPDATE_BODY_MESSAGE }) },
+  [
+    z.strictObject({ isActive: z.boolean() }, updateBodyErrors),
+    z.strictObject({ isRemoved: z.literal(true) }, updateBodyErrors),
+  ],
+  updateBodyErrors,
 );
 
 export type UpdateNotificationBody = z.output<typeof updateNotificationSchema>;
