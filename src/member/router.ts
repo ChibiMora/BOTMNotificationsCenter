@@ -1,6 +1,7 @@
 /** Member router (/notifications), case-sensitive like the admin router. Parses input with the zod schemas, then delegates. */
 import Router from '@koa/router';
 import type { Deps } from '../lib/deps.js';
+import { noQuery } from '../middleware/noQuery.js';
 import { idParams, listQuery, patchBody } from './schemas.js';
 import { listDeliveries } from './listDeliveries.js';
 import { getDelivery } from './getDelivery.js';
@@ -14,12 +15,12 @@ export function memberRouter(deps: Deps): Router {
     ctx.body = await listDeliveries(deps, ctx.state.accountId, query);
   });
 
-  router.get('/notifications/:id', async (ctx) => {
+  router.get('/notifications/:id', noQuery(), async (ctx) => {
     const { id } = idParams.parse(ctx.params);
     ctx.body = await getDelivery(deps, ctx.state.accountId, id);
   });
 
-  router.patch('/notifications/:id', async (ctx) => {
+  router.patch('/notifications/:id', noQuery(), async (ctx) => {
     const { id } = idParams.parse(ctx.params);
     patchBody.parse(ctx.request.body);
     ctx.body = await updateDelivery(deps, ctx.state.accountId, id);

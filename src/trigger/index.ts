@@ -1,5 +1,6 @@
 // NotificationTrigger (§6.4, §8.2, B11): imported by the ship / enroll / pre-enroll code paths.
 // Each call enqueues exactly one job and never throws or rejects; failures are logged, counted and swallowed.
+import { canonicalJson } from '../lib/canonicalJson.js';
 import type { Config } from '../config/index.js';
 import { createWriterDb } from '../db/index.js';
 import { systemClock } from '../lib/clock.js';
@@ -124,17 +125,6 @@ export class NotificationTrigger {
 
 const bundles = new Map<string, NotificationTrigger>();
 
-/** Stable serialisation of the whole config (keys sorted at every level), so any differing setting gets its own bundle. */
-function stableKey(value: unknown): string {
-  return JSON.stringify(value, (_k, v: unknown) =>
-    v && typeof v === 'object' && !Array.isArray(v)
-      ? Object.fromEntries(
-          Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-        )
-      : v,
-  );
-}
-
 /**
  * Builds a ready trigger for business code that has only the shared Config. Enqueue-only: never consumes.
  * One bundle (and one database pool) per process per distinct configuration: the pool lives for the life of the
@@ -142,7 +132,7 @@ function stableKey(value: unknown): string {
  * opened, rethrows, and is not cached.
  */
 export function createNotificationTrigger(config: Config): NotificationTrigger {
-  const key = stableKey(config);
+  const key = canonicalJson(config); // sorted keys at every level: any differing setting gets its own bundle
   const existing = bundles.get(key);
   if (existing) return existing;
   const log = createLogger(config.logLevel, { service: 'trigger' });

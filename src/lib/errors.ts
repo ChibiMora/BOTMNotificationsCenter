@@ -19,3 +19,14 @@ export class AppError extends Error {
   }
 }
 export const validationError = (message: string) => new AppError('VALIDATION_ERROR', 400, message);
+
+/** The 404 message per resource (§3.2); `undefined` renders the bare { error: "NOT_FOUND" } body. */
+const NOT_FOUND_MESSAGES = {
+  notification: 'notification not found',
+  import: undefined,
+  delivery: undefined,
+} as const;
+
+/** The one "not found" construction site for admin and member handlers. */
+export const notFound = (resource: keyof typeof NOT_FOUND_MESSAGES) =>
+  new AppError('NOT_FOUND', 404, NOT_FOUND_MESSAGES[resource]);

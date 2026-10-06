@@ -39,7 +39,7 @@ function readCursor(s: string, f: string): { c: Date; i: number } {
 
 export async function listNotifications(deps: Deps, ctx: Koa.Context) {
   const q = listQuerySchema.parse(ctx.query);
-  const limit = q.limit ?? 25;
+  const limit = q.limit;
   const tz = deps.config.businessTimezone;
   const from = q.createdFrom === undefined ? null : parseRequestTimestamp(q.createdFrom, tz);
   const to = q.createdTo === undefined ? null : parseRequestTimestamp(q.createdTo, tz);
