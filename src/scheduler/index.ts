@@ -1,5 +1,7 @@
 // Timer registry and scheduler (§8.3). tick(now) runs due timers and records scheduled_runs from the app clock;
 // leader-only timers run only while this process holds the leader lock (leader.ts).
+// Ownership is re-verified against MySQL immediately before each tick starts a leader-only run, but a brief
+// two-leader window (lock lost right after the check) cannot be fully excluded: leader-only timers MUST be idempotent.
 import type { Deps } from '../lib/deps.js';
 import type { Schedule } from './schedule.js';
 import { Leader } from './leader.js';
@@ -25,7 +27,14 @@ export const timers = (deps: Deps): Timer[] => [
   housekeepingTimer(deps),
 ];
 
-export function createScheduler(deps: Deps, list: Timer[], opts: { isLeader(): boolean }) {
+export interface LeaderGate {
+  /** Cached leadership flag (cheap; may be stale). */
+  isLeader(): boolean;
+  /** Confirms with the database that this process still holds the lock; called before starting leader-only runs. */
+  verifyLeader?(): Promise<boolean>;
+}
+
+export function createScheduler(deps: Deps, list: Timer[], opts: LeaderGate) {
   const lastStarted = new Map<string, Date>();
   const inFlight = new Set<string>();
 
@@ -66,9 +75,14 @@ export function createScheduler(deps: Deps, list: Timer[], opts: { isLeader(): b
   return {
     /** Starts every due timer; resolves when they have all finished. A failing timer never stops the others. */
     async tick(now: Date): Promise<void> {
-      const due = list.filter(
+      let due = list.filter(
         (t) => (!t.leaderOnly || opts.isLeader()) && t.schedule.isDue(now, lastStarted.get(t.name)),
       );
+      // Not the holder any more: leader-only timers are left alone, exactly as on a non-leader (nothing recorded).
+      if (due.some((t) => t.leaderOnly) && opts.verifyLeader) {
+        const mine = await opts.verifyLeader().catch(() => false);
+        if (!mine) due = due.filter((t) => !t.leaderOnly);
+      }
       await Promise.all(
         due.map((t) =>
           runTimer(t, now).catch((e) =>
@@ -85,7 +99,10 @@ export function createScheduler(deps: Deps, list: Timer[], opts: { isLeader(): b
 export function startScheduler(deps: Deps, list: Timer[] = timers(deps)): { stop(): Promise<void> } {
   const leader = new Leader(deps.config.databaseUrl, deps.config.resourceNamespace);
   let stopped = false;
-  const scheduler = createScheduler(deps, list, { isLeader: () => !stopped && leader.isLeader() });
+  const scheduler = createScheduler(deps, list, {
+    isLeader: () => !stopped && leader.isLeader(),
+    verifyLeader: async () => !stopped && (await leader.tryAcquire()) && !stopped,
+  });
   const ticking = new Set<Promise<void>>();
   void leader.tryAcquire();
   const leaderTimer = setInterval(() => void leader.tryAcquire(), LEADER_RETRY_MS);

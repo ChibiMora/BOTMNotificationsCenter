@@ -59,4 +59,23 @@ describe('scheduler bookkeeping', () => {
     expect(a).toHaveBeenCalledTimes(2);
     expect(b).toHaveBeenCalledTimes(2);
   });
+
+  it('a leader whose ownership check now fails does not start a leader-only timer; others still run', async () => {
+    const recorded: string[] = [];
+    const deps = fakeDeps((row) => (recorded.push(String(row.name)), false));
+    const leaderRun = vi.fn(async () => undefined);
+    const anyRun = vi.fn(async () => undefined);
+    const list: Timer[] = [
+      { name: 'leader', leaderOnly: true, schedule: intervalSchedule(1), run: leaderRun },
+      { name: 'any', leaderOnly: false, schedule: intervalSchedule(1), run: anyRun },
+    ];
+    // The cached flag still says leader, but the lock is no longer ours.
+    const verifyLeader = vi.fn(async () => false);
+    const s = createScheduler(deps, list, { isLeader: () => true, verifyLeader });
+    await s.tick(at(0));
+    expect(verifyLeader).toHaveBeenCalled();
+    expect(leaderRun).not.toHaveBeenCalled();
+    expect(anyRun).toHaveBeenCalledTimes(1);
+    expect(recorded).not.toContain('leader');
+  });
 });

@@ -80,7 +80,16 @@ export class Leader {
   private async attempt(): Promise<boolean> {
     try {
       if (!this.conn) {
-        const conn = await this.withTimeout((this.opts.connect ?? defaultConnect)(this.databaseUrl));
+        const connecting = (this.opts.connect ?? defaultConnect)(this.databaseUrl);
+        const conn = await this.withTimeout(connecting).catch((e: unknown) => {
+          // Timed out: a connection that opens later would otherwise leak, so destroy it when it arrives.
+          if (e instanceof ProbeTimeout)
+            connecting.then(
+              (late) => late.destroy(),
+              () => undefined,
+            );
+          throw e;
+        });
         if (this.closed) {
           conn.destroy();
           return false;
