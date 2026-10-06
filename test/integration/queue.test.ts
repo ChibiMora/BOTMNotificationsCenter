@@ -238,7 +238,7 @@ describe('jobs migration', () => {
     await c.stop();
     await vi.advanceTimersByTimeAsync(3_600_000);
     vi.useRealTimers();
-    await q.enqueue('event_delivery', { x: 1 });
+    await q.enqueue('event_delivery', { x: 1 } as never);
     await db('jobs').insert({
       type: 'event_delivery',
       payload: '{}',

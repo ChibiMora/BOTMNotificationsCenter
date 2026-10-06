@@ -37,7 +37,7 @@ export async function recheckAccount(deps: Deps, accountId: number): Promise<num
           throw err;
         }
         // One bad notification must not fail the job for the others; ids only, never the filters' content.
-        deps.metrics.count('account_recheck.unusable_filters');
+        deps.metrics.count('account_recheck_unusable_filters');
         deps.log.error({ notificationId: n.id, accountId }, 'account_recheck: unusable filters, skipped');
         continue;
       }
@@ -63,7 +63,7 @@ export const accountRecheck: (
   ctx: JobContext,
 ) => Promise<void> = async (deps, payload) => {
   const written = await recheckAccount(deps, payload.accountId);
-  deps.metrics.count('account_recheck.deliveries_written', written);
+  deps.metrics.count('account_recheck_deliveries_written', written);
   deps.log.info(
     { accountId: payload.accountId, written, requestId: payload.requestId },
     'account_recheck finished',

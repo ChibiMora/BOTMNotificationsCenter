@@ -61,7 +61,7 @@ export function createScheduler(deps: Deps, list: Timer[], opts: LeaderGate) {
     } catch (e) {
       status = 'failed';
       deps.log.error({ err: e, timer: t.name }, 'timer failed');
-      deps.metrics.count('timer_failed', 1, { timer: t.name });
+      deps.metrics.count('timer_failed', 1, { name: t.name });
     } finally {
       inFlight.delete(t.name);
     }

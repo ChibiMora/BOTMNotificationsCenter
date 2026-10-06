@@ -68,14 +68,14 @@ describe('fanout_filter', () => {
       expect(new Date(r.due_at).getTime()).toBe(t);
     }
     expect(metrics.calls.some((c) => c.kind === 'count' && c.value === expected.length)).toBe(true);
-    expect(metrics.calls.filter((c) => c.name === 'fanout_filter.deliveries_written')).toEqual([
-      { kind: 'count', name: 'fanout_filter.deliveries_written', value: expected.length, dims: undefined },
+    expect(metrics.calls.filter((c) => c.name === 'fanout_filter_deliveries_written')).toEqual([
+      { kind: 'count', name: 'fanout_filter_deliveries_written', value: expected.length, dims: undefined },
     ]);
     // A second run inserts nothing: the job still emits the count, with value 0.
     metrics.calls.length = 0;
     await fanoutFilter(deps, { notificationId: n.id }, ctx());
     expect(
-      metrics.calls.filter((c) => c.name === 'fanout_filter.deliveries_written').map((c) => c.value),
+      metrics.calls.filter((c) => c.name === 'fanout_filter_deliveries_written').map((c) => c.value),
     ).toEqual([0]);
   });
 
@@ -341,7 +341,7 @@ describe('fanout_filter: review fixes', () => {
     }
   });
 
-  it('unusable filters: logs once at error level with the id only and counts fanout_filter.unusable_filters', async () => {
+  it('unusable filters: logs once at error level with the id only and counts fanout_filter_unusable_filters', async () => {
     const metrics = new RecordingMetrics();
     const log = createLogger('silent');
     const error = vi.spyOn(log, 'error');
@@ -355,8 +355,8 @@ describe('fanout_filter: review fixes', () => {
     const [fields, msg] = error.mock.calls[0] as unknown as [Record<string, unknown>, string];
     expect(fields).toMatchObject({ notificationId: n.id });
     expect(JSON.stringify([fields, msg])).not.toMatch(/relationship_status|bff/);
-    expect(metrics.calls.filter((c) => c.name === 'fanout_filter.unusable_filters')).toEqual([
-      { kind: 'count', name: 'fanout_filter.unusable_filters', value: 1, dims: undefined },
+    expect(metrics.calls.filter((c) => c.name === 'fanout_filter_unusable_filters')).toEqual([
+      { kind: 'count', name: 'fanout_filter_unusable_filters', value: 1, dims: undefined },
     ]);
     expect(await ids(n.id)).toEqual([]);
   });

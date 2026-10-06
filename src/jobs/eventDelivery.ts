@@ -3,16 +3,11 @@
 import type { Deps } from '../lib/deps.js';
 import { insertDeliveries, type NewDelivery } from '../lib/insertDeliveries.js';
 import { truncateToSecond, windowStart } from '../lib/time.js';
-import type { EventTrigger, JobContext, JobPayloads } from '../queue/queue.js';
+import { EVENT_TRIGGERS, MAX_OCCURRENCE_KEY, type JobContext, type JobPayloads } from '../queue/queue.js';
 import { recheckAccount } from './accountRecheck.js';
 
 const DAY_MS = 86_400_000;
-const EVENT_TRIGGERS: ReadonlySet<string> = new Set<EventTrigger>([
-  'shipped',
-  'enrolled',
-  'preenrollAudiobook',
-]);
-const MAX_OCCURRENCE_KEY = 128;
+const EVENT_TRIGGER_SET: ReadonlySet<string> = new Set<string>(EVENT_TRIGGERS);
 // Strict ISO-8601 UTC: `YYYY-MM-DDTHH:MM:SS[.fff…]Z`. Anything else (local-time strings, bare numbers, offsets) is
 // rejected rather than left to Date.parse's lenient, partly local-time reading.
 const ISO_UTC = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
@@ -50,7 +45,7 @@ function validOccurredAt(s: unknown): s is string {
 /** The first invalid field of a payload, or null. The handler checks for itself rather than relying on the trigger. */
 function invalidField(p: JobPayloads['event_delivery']): string | null {
   if (typeof p !== 'object' || p === null) return 'payload';
-  if (typeof p.type !== 'string' || !EVENT_TRIGGERS.has(p.type)) return 'type';
+  if (typeof p.type !== 'string' || !EVENT_TRIGGER_SET.has(p.type)) return 'type';
   if (!Number.isSafeInteger(p.accountId) || p.accountId <= 0) return 'accountId';
   if (!validOccurredAt(p.occurredAt)) return 'occurredAt';
   if (
@@ -124,7 +119,7 @@ export const eventDelivery: (
       deps.metrics.count('event_delivery_unknown_account', 1, { type });
       return;
     }
-    deps.metrics.count('event_deliveries_inserted', result.inserted, { type });
+    deps.metrics.count('event_delivery_inserted', result.inserted, { type });
     deps.log.info(
       { accountId, occurrenceKey, inserted: result.inserted, alreadyDelivered: result.alreadyDelivered },
       'event_delivery done',

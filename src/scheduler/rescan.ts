@@ -26,7 +26,7 @@ export async function rescan(deps: Deps, opts: { page?: number } = {}): Promise<
         enqueued++;
       } catch (err) {
         failed++;
-        deps.metrics.count('rescan.enqueue_failed');
+        deps.metrics.count('rescan_enqueue_failed');
         deps.log.error({ notificationId, err }, 'rescan: enqueue fanout_filter failed');
       }
     }
@@ -35,7 +35,7 @@ export async function rescan(deps: Deps, opts: { page?: number } = {}): Promise<
     }
     afterId = ids[ids.length - 1]!;
   }
-  deps.metrics.count('rescan.enqueued', enqueued);
+  deps.metrics.count('rescan_enqueued', enqueued);
   deps.log.info({ enqueued, failed }, 'rescan finished');
 }
 

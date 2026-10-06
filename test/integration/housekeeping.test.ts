@@ -142,10 +142,10 @@ describe('housekeeping', () => {
       ) as never,
       { onDead: async () => {} },
     );
-    await queue.enqueue('event_delivery', { n: 'old' });
+    await queue.enqueue('event_delivery', { n: 'old' } as never);
     await queue.runOnce();
     clock.advance(2 * DAY);
-    await queue.enqueue('event_delivery', { n: 'recent' });
+    await queue.enqueue('event_delivery', { n: 'recent' } as never);
     await queue.runOnce();
     clock.advance((config.deadJobRetentionDays - 1) * DAY);
     await housekeeping(deps);
