@@ -70,6 +70,56 @@ export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): 
 
   const purgeable = queue as Partial<{ purgeDead(): Promise<number> }>;
   if (typeof purgeable.purgeDead === 'function') await purgeable.purgeDead();
+
+  // A metrics failure is logged, never fails the housekeeping run.
+  await deliveriesPerAccountDay(deps).catch((e) =>
+    deps.log.error({ err: e }, 'deliveries per account metric failed'),
+  );
+}
+
+/**
+ * §11.4 abuse signal: deliveries created today (UTC, from the injected clock) per account — max and p99 (nearest rank).
+ * notification_deliveries has no created_at index and no migration is added, so the first id created today is found by
+ * a binary search over the primary key (created_at rises with id; ~log2(rows) point lookups), then only today's id
+ * range is scanned and grouped by account. Cost is proportional to today's deliveries, not the table.
+ */
+export async function deliveriesPerAccountDay(deps: Pick<Deps, 'db' | 'clock' | 'metrics'>): Promise<void> {
+  const { db, clock, metrics } = deps;
+  const now = clock.now();
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const [bounds] = await db('notification_deliveries').min({ lo: 'id' }).max({ hi: 'id' });
+  let max = 0;
+  let p99 = 0;
+  if (bounds?.lo != null) {
+    let lo = Number(bounds.lo);
+    let hi = Number(bounds.hi) + 1; // first id with created_at >= dayStart lies in [lo, hi]
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const r = await db('notification_deliveries')
+        .select('id', 'created_at')
+        .where('id', '>=', mid)
+        .orderBy('id')
+        .first();
+      if (!r || new Date(r.created_at).getTime() >= dayStart.getTime()) hi = mid;
+      else lo = Number(r.id) + 1;
+    }
+    const counts: number[] = (
+      await db('notification_deliveries')
+        .select('account_id')
+        .count({ c: '*' })
+        .where('id', '>=', lo)
+        .andWhere('created_at', '>=', dayStart)
+        .groupBy('account_id')
+    )
+      .map((r) => Number(r.c))
+      .sort((a, b) => a - b);
+    if (counts.length > 0) {
+      max = counts[counts.length - 1] ?? 0;
+      p99 = counts[Math.ceil(0.99 * counts.length) - 1] ?? 0;
+    }
+  }
+  metrics.gauge('deliveries_per_account_day_max', max);
+  metrics.gauge('deliveries_per_account_day_p99', p99);
 }
 
 export const housekeepingTimer = (deps: Deps): Timer => ({

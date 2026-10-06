@@ -347,10 +347,8 @@ export class DbQueue implements Queue {
         },
         'job attempt',
       );
-      metrics.timing('job_duration_ms', durationMs, {
-        type: job.type,
-        outcome,
-      });
+      metrics.count('job_outcome', 1, { type: job.type, outcome });
+      metrics.timing('job_duration_ms', durationMs, { type: job.type });
     }
   }
 
@@ -417,6 +415,18 @@ export class DbQueue implements Queue {
         .del();
       if (deleted < DONE_DELETE_CHUNK) break;
     }
+    // §11.4 queue depth (queued jobs that are due) and the age of the oldest one, measured from its run_at.
+    const [due] = await db('jobs')
+      .where('status', 'queued')
+      .andWhere('run_at', '<=', now)
+      .count({ n: '*' })
+      .min({ oldest: 'run_at' });
+    const oldest = due?.oldest ? new Date(due.oldest as Date).getTime() : null;
+    this.parts.metrics.gauge('queue_depth', Number(due?.n ?? 0));
+    this.parts.metrics.gauge(
+      'queue_oldest_age_seconds',
+      oldest === null ? 0 : Math.floor((now.getTime() - oldest) / 1000),
+    );
   }
 
   /** Not part of Queue: housekeeping calls it when the configured queue provides it (§8.3). Returns rows deleted. */
