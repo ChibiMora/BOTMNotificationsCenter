@@ -4,6 +4,7 @@ import type { Timer } from './index.js';
 import { cronSchedule } from './schedule.js';
 import { cancelledScheduledDeliveries } from '../lib/cancellation.js';
 import { monthKey } from '../lib/time.js';
+import { activeFilterNotifications } from '../lib/filterNotifications.js';
 
 const CHUNK = 1000;
 const STALE_IMPORT_MS = 10 * 60_000;
@@ -24,9 +25,7 @@ export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): 
   // fanout_filter being idempotent. By design, a notification whose audience is empty never gets a delivery and is
   // therefore re-enqueued on every run.
   for (let afterId = 0; ;) {
-    const ids: number[] = await db('notifications as n')
-      .join('notification_types as t', 't.id', 'n.type')
-      .where({ 't.name': 'filter', 'n.active': true, 'n.removed': false })
+    const ids: number[] = await activeFilterNotifications(db)
       .andWhere('n.id', '>', afterId)
       .whereNotExists(
         db('notification_deliveries as d')
