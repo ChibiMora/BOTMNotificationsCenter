@@ -65,6 +65,7 @@ describe('eligibleAccounts: empty arrays and unusable filters', () => {
     expect(sb({ country: [] })).toEqual(bare);
     expect(sb({ country: [], policy: [], relationshipStatus: [] })).toEqual(bare);
     expect(sb({ country: [], policy: ['annual'] })).toEqual(sb({ policy: ['annual'] }));
+    expect(sb({ credits: {} })).toEqual(bare);
   });
   it.each([
     ['a JSON string', '{"country":["US"]}'],
@@ -85,6 +86,18 @@ describe('eligibleAccounts: empty arrays and unusable filters', () => {
     ['a non-object credits', { credits: 3 }],
     ['a fractional minimum', { credits: { minimum: 1.5 } }],
     ['a string maximum', { credits: { maximum: '3' } }],
+    ['an unknown key (stored spelling)', { relationship_status: ['bff'] }],
+    ['an unknown key beside a known one', { country: ['US'], countries: ['CA'] }],
+    ['an unknown key inside credits', { credits: { min: 2 } }],
+    ['an unknown key beside a credits bound', { credits: { minimum: 1, max: 3 } }],
+    ['a null country', { country: null }],
+    ['a null policy', { policy: null }],
+    ['a null relationshipStatus', { relationshipStatus: null }],
+    ['a null credits', { credits: null }],
+    ['a null credits minimum', { credits: { minimum: null } }],
+    ['a null credits maximum', { credits: { maximum: null } }],
+    ['an unsafe integer minimum', { credits: { minimum: 2 ** 53 } }],
+    ['an unsafe integer maximum', { credits: { maximum: -(2 ** 53) } }],
   ])('throws a clear error on %s', (_label, value) => {
     expect(() => eligibleAccounts(db, value as never)).toThrow(/unusable filters/);
   });

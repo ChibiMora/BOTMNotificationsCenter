@@ -15,6 +15,9 @@ const PAGE = 500;
 
 /** Inserts this month's live delivery of every matching active filter notification for one account; returns the count. */
 export async function recheckAccount(deps: Deps, accountId: number): Promise<number> {
+  // One instant and one month key for the whole call, so a call spanning a month boundary cannot split across keys.
+  const t = deps.clock.now();
+  const dedupeKey = monthKey(t);
   let written = 0;
   let afterId = 0;
   for (;;) {
@@ -42,8 +45,8 @@ export async function recheckAccount(deps: Deps, accountId: number): Promise<num
       if (!match) {
         continue;
       }
-      const t = deps.clock.now();
-      const row = { notificationId: n.id, accountId, dedupeKey: monthKey(t), dueAt: t, sentAt: t };
+      const row = { notificationId: n.id, accountId, dedupeKey, dueAt: t, sentAt: t };
+      // `now` stays fresh per insert: it becomes created_at, which the cancellation rule reads.
       const result = await insertDeliveries(deps.db, [row], { now: deps.clock.now() });
       written += result.inserted;
     }

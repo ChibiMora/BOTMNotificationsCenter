@@ -1,7 +1,8 @@
 // fanout_filter (§7.2 steps 5–7, §8.2 row; B7, B8, B17) against the real database and seeded accounts 1–72.
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import type { Knex } from 'knex';
-import { testDb, resetDb } from '../helpers/db.js';
+import { testDb, resetDb, testConfig } from '../helpers/db.js';
+import { createLogger } from '../../src/lib/logger.js';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { FixedClock } from '../helpers/clock.js';
 import { makeNotification } from '../helpers/factories.js';
@@ -329,6 +330,49 @@ describe('fanout_filter: review fixes', () => {
       await expect(fanoutFilter(deps, { notificationId: n.id }, ctx())).rejects.toThrow(/unusable filters/);
       expect(await ids(n.id)).toEqual([]);
     }
+  });
+
+  it('unusable filters: logs once at error level with the id only and counts fanout_filter.unusable_filters', async () => {
+    const metrics = new RecordingMetrics();
+    const log = createLogger('silent');
+    const error = vi.spyOn(log, 'error');
+    const deps = makeTestDeps({ db, metrics, log });
+    const n = await makeNotification(db, 'filter', {
+      active: true,
+      filters: JSON.stringify({ relationship_status: ['bff'] }),
+    });
+    await expect(fanoutFilter(deps, { notificationId: n.id }, ctx())).rejects.toThrow(/unusable filters/);
+    expect(error).toHaveBeenCalledTimes(1);
+    const [fields, msg] = error.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(fields).toMatchObject({ notificationId: n.id });
+    expect(JSON.stringify([fields, msg])).not.toMatch(/relationship_status|bff/);
+    expect(metrics.calls.filter((c) => c.name === 'fanout_filter.unusable_filters')).toEqual([
+      { kind: 'count', name: 'fanout_filter.unusable_filters', value: 1, dims: undefined },
+    ]);
+    expect(await ids(n.id)).toEqual([]);
+  });
+
+  it('deactivated after the first chunk of a range is written: no further chunk of that range is written', async () => {
+    const n = await makeNotification(db, 'filter', { active: true });
+    let inserts = 0;
+    // Writer proxy: after the first delivery insert returns, commit the deactivation before the handler continues.
+    const writer = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop !== 'raw') return Reflect.get(target, prop, receiver);
+        return (...args: unknown[]) => {
+          const r = (target.raw as (...a: unknown[]) => Promise<unknown>)(...args);
+          if (!/^insert into `notification_deliveries`/i.test(String(args[0]))) return r;
+          return Promise.resolve(r).then(async (res) => {
+            if (++inserts === 1) await db('notifications').where({ id: n.id }).update({ active: false });
+            return res;
+          });
+        };
+      },
+    }) as Knex;
+    const deps = makeTestDeps({ db: writer, dbReader: db, config: { ...testConfig(), fanoutBatchSize: 10 } });
+    await fanoutFilter(deps, { notificationId: n.id }, ctx());
+    expect(inserts).toBe(1);
+    expect(await ids(n.id)).toEqual(ALL.slice(0, 10));
   });
 
   it('an accounts-query error on the reader makes the handler reject', async () => {
