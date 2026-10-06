@@ -185,3 +185,62 @@ describe('account_recheck consistency with sibling jobs (§8.2, §9)', () => {
     expect(fields.err).toBeInstanceOf(UnusableFiltersError);
   });
 });
+
+describe('account_recheck skips notifications the account already has this month', () => {
+  /** Counts INSERT statements against notification_deliveries issued through the writer while `run` executes. */
+  const countDeliveryInserts = async (run: () => Promise<unknown>) => {
+    let inserts = 0;
+    const listener = (q: { sql?: string }) => {
+      if (/^\s*insert\b[^]*\bnotification_deliveries\b/i.test(q.sql ?? '')) inserts++;
+    };
+    db.on('query', listener);
+    try {
+      await run();
+    } finally {
+      db.removeListener('query', listener);
+    }
+    return inserts;
+  };
+
+  it('already delivered this month: no insert attempt for it, and the delivery count is unchanged', async () => {
+    const deps = makeTestDeps({ db });
+    const n = await makeNotification(db, 'filter', { active: true, filters: json({ country: ['US'] }) });
+    expect(await recheckAccount(deps, 1)).toBe(1);
+    expect(await countDeliveryInserts(() => recheckAccount(deps, 1))).toBe(0);
+    expect((await forAccount(1)).map((r) => r.notification_id)).toEqual([n.id]);
+    expect(await db('notification_deliveries').count({ n: '*' }).first()).toEqual({ n: 1 });
+  });
+
+  it('the skip is per notification: a second matching notification not yet received is still inserted', async () => {
+    const deps = makeTestDeps({ db });
+    const n = await makeNotification(db, 'filter', { active: true, filters: json({ country: ['US'] }) });
+    await recheckAccount(deps, 1);
+    const m = await makeNotification(db, 'filter', { active: true, filters: json({ policy: ['monthly'] }) });
+    let written = -1;
+    const inserts = await countDeliveryInserts(async () => {
+      written = await recheckAccount(deps, 1);
+    });
+    expect(written).toBe(1);
+    expect(inserts).toBe(1);
+    expect((await forAccount(1)).map((r) => r.notification_id)).toEqual([n.id, m.id]);
+  });
+
+  it("last month's delivery does not cause a skip this month", async () => {
+    const clock = new FixedClock(new Date('2026-09-15T12:00:00Z'));
+    const deps = makeTestDeps({ db, clock });
+    const n = await makeNotification(db, 'filter', { active: true, filters: json({ country: ['US'] }) });
+    expect(await recheckAccount(deps, 1)).toBe(1);
+    clock.set('2026-10-02T12:00:00Z');
+    let written = -1;
+    const inserts = await countDeliveryInserts(async () => {
+      written = await recheckAccount(deps, 1);
+    });
+    expect(written).toBe(1);
+    expect(inserts).toBe(1);
+    const got = await forAccount(1).orderBy('dedupe_key');
+    expect(got.map((r) => [r.notification_id, r.dedupe_key])).toEqual([
+      [n.id, '2026-09'],
+      [n.id, '2026-10'],
+    ]);
+  });
+});

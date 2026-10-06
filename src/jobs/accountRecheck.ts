@@ -25,6 +25,17 @@ export async function recheckAccount(
   const dedupeKey = monthKey(t);
   let written = 0;
   let afterId = 0;
+  // One read up front of the notifications this account already has this month: each is skipped below without its
+  // eligibility query or the insert the unique key would reject (this runs after every event_delivery). On the
+  // writer, for the same reason as the eligibility query below. idx_member_list serves the account_id prefix.
+  const alreadySent = new Set<number>(
+    (
+      await deps
+        .db('notification_deliveries')
+        .where({ account_id: accountId, dedupe_key: dedupeKey })
+        .select<Array<{ notification_id: number }>>('notification_id')
+    ).map((r) => r.notification_id),
+  );
   for (;;) {
     const page: Array<Pick<NotificationRow, 'id' | 'filters'>> = await activeFilterNotifications(deps.db)
       .andWhere('n.id', '>', afterId)
@@ -47,6 +58,10 @@ export async function recheckAccount(
           { err, notificationId: n.id, accountId, requestId },
           'account_recheck: unusable filters, skipped',
         );
+        continue;
+      }
+      // After the (query-free) filter build, so an unusable notification is still warned and counted as before.
+      if (alreadySent.has(n.id)) {
         continue;
       }
       const match = await forAccount(eligibility, accountId).first();
