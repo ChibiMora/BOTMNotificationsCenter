@@ -1,7 +1,7 @@
 /** POST /admin/notifications/filter (§3.4, §7.2, §9.4). */
 import type Koa from 'koa';
 import type { Deps } from '../lib/deps.js';
-import type { Logger } from '../lib/logger.js';
+import { enqueueAfterCommit } from './enqueueAfterCommit.js';
 import { createFilterSchema, type Filters } from './schemas.js';
 import { insertIdempotent } from './idempotentInsert.js';
 import { presentDetail } from './presenter.js';
@@ -30,12 +30,13 @@ export async function createFilter(deps: Deps, ctx: Koa.Context) {
   // §7.2: the fan-out is enqueued after the insert has committed; a failed enqueue does not fail the request.
   // Logged through the request-scoped logger so the entry carries the request id; ids only, never content.
   if (created && body.isActive) {
-    try {
-      await deps.queue.enqueue('fanout_filter', { notificationId: row.id, requestId: ctx.state.requestId });
-    } catch (err) {
-      const log = (ctx.state.log as Logger | undefined) ?? deps.log;
-      log.error({ err, notificationId: row.id }, 'fanout_filter enqueue failed');
-    }
+    await enqueueAfterCommit(
+      deps,
+      ctx,
+      'fanout_filter',
+      { notificationId: row.id, requestId: ctx.state.requestId },
+      { notificationId: row.id },
+    );
   }
   ctx.status = 201;
   ctx.body = presentDetail(deps.config, row);

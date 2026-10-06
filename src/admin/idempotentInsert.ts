@@ -1,31 +1,10 @@
 /** The idempotent insert shared by the filter and event creates (§3.4, §9.4). */
-import { createHash } from 'node:crypto';
 import type Koa from 'koa';
 import type { Deps } from '../lib/deps.js';
 import type { NotificationTypeName } from '../lib/rows.js';
-import { validationError } from '../lib/errors.js';
+import { differentRequest, isDuplicateKey, keyUsedElsewhere, requestHash } from './idempotency.js';
 import { truncateToSecond } from '../lib/time.js';
 import { loadNotification, type NamedNotificationRow } from './presenter.js';
-
-/** Stable JSON: object keys sorted at every level, so reordered keys hash the same. */
-function canonicalJson(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
-  if (v !== null && typeof v === 'object') {
-    const entries = Object.entries(v as Record<string, unknown>)
-      .filter(([, x]) => x !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, x]) => `${JSON.stringify(k)}:${canonicalJson(x)}`).join(',')}}`;
-  }
-  return JSON.stringify(v);
-}
-
-const isDuplicateRequestKey = (err: unknown) => {
-  const e = err as { code?: string; message?: string; sqlMessage?: string };
-  return (
-    e?.code === 'ER_DUP_ENTRY' &&
-    `${e.message ?? ''} ${e.sqlMessage ?? ''}`.includes('uq_notifications_request_key')
-  );
-};
 
 /**
  * Inserts a notification under the request's Idempotency-Key. A replay of the same request returns the existing
@@ -47,14 +26,10 @@ export async function insertIdempotent(
   columns: Record<string, unknown>,
 ): Promise<{ row: NamedNotificationRow; created: boolean }> {
   const key = ctx.state.idempotencyKey as string;
-  const hash = createHash('sha256').update(canonicalJson(normalised)).digest('hex');
+  const hash = requestHash(normalised);
   const now = truncateToSecond(deps.clock.now());
   const typeRow = await deps.db('notification_types').where({ name: type }).first('id');
-  const [importUse, runUse] = await Promise.all([
-    deps.db('imports').where({ request_key: key }).first('id'),
-    deps.db('import_runs').where({ request_key: key }).first('id'),
-  ]);
-  if (importUse || runUse) throw validationError('Idempotency-Key already used for a different request');
+  if (await keyUsedElsewhere(deps, key, 'notifications')) throw differentRequest();
   try {
     const [id] = await deps.db('notifications').insert({
       ...columns,
@@ -67,14 +42,14 @@ export async function insertIdempotent(
     });
     return { row: await loadNotification(deps.db, id!), created: true };
   } catch (err) {
-    if (!isDuplicateRequestKey(err)) throw err;
+    if (!isDuplicateKey(err, 'notifications')) throw err;
   }
   const existing = await deps
     .db('notifications')
     .where({ request_key: key })
     .first('id', 'request_endpoint', 'request_hash');
   if (!existing || existing.request_endpoint !== type || existing.request_hash !== hash) {
-    throw validationError('Idempotency-Key already used for a different request');
+    throw differentRequest();
   }
   return { row: await loadNotification(deps.db, existing.id), created: false };
 }

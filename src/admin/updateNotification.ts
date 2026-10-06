@@ -2,8 +2,8 @@
 import type Koa from 'koa';
 import type { Deps } from '../lib/deps.js';
 import type { JobType } from '../queue/queue.js';
-import type { Logger } from '../lib/logger.js';
-import { AppError } from '../lib/errors.js';
+import { enqueueAfterCommit } from './enqueueAfterCommit.js';
+import { AppError, notFound } from '../lib/errors.js';
 import { withTransaction } from '../db/index.js';
 import { idParamSchema, updateNotificationSchema } from './schemas.js';
 import { loadNotification, presentDetail, type NamedNotificationRow } from './presenter.js';
@@ -20,7 +20,7 @@ export async function updateNotification(deps: Deps, ctx: Koa.Context & { params
   const { row, job } = await withTransaction(deps.db, async (trx): Promise<Outcome> => {
     // Lock only the notification row (no join, so the type row is not locked). Busy → errno 3572 → 409.
     const locked = await trx('notifications').where({ id }).forUpdate().noWait().first('id');
-    if (!locked) throw new AppError('NOT_FOUND', 404, 'notification not found');
+    if (!locked) throw notFound('notification');
     const current = await loadNotification(trx, id);
     if (current.removed) throw new AppError('CONFLICT', 409, 'notification is removed');
 
@@ -50,12 +50,13 @@ export async function updateNotification(deps: Deps, ctx: Koa.Context & { params
 
   // §7.4: enqueued after the commit; a failed enqueue does not fail the request. Ids only, never content.
   if (job) {
-    try {
-      await deps.queue.enqueue(job, { notificationId: id, requestId: ctx.state.requestId });
-    } catch (err) {
-      const log = (ctx.state.log as Logger | undefined) ?? deps.log;
-      log.error({ err, notificationId: id }, `${job} enqueue failed`);
-    }
+    await enqueueAfterCommit(
+      deps,
+      ctx,
+      job,
+      { notificationId: id, requestId: ctx.state.requestId },
+      { notificationId: id },
+    );
   }
   ctx.body = presentDetail(deps.config, row);
 }

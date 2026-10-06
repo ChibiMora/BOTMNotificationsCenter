@@ -1,5 +1,6 @@
 /** Admin request schemas (§9.2): content fields, the two create bodies and the list query. */
 import { z } from 'zod';
+import { limitQuery, queryValue } from '../lib/pageSize.js';
 import { validatePath } from '../lib/urls.js';
 
 // Control characters, line breaks (incl. U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR) and tabs, `<`, `>`
@@ -89,20 +90,12 @@ export const createEventSchema = z.strictObject({
   delay: z.number().int('delay must be an integer').min(0).max(365).optional(),
 });
 
-/** One query value: a repeated parameter (array) is rejected. */
-const queryString = (field: string) => z.string({ message: `${field} must be given once` });
-
 export const listQuerySchema = z.strictObject({
-  limit: queryString('limit')
-    .regex(/^[0-9]+$/, 'limit must be a positive integer')
-    .transform(Number)
-    .refine((n) => n >= 1, 'limit must be a positive integer')
-    .transform((n) => Math.min(n, 25))
-    .optional(),
-  cursor: queryString('cursor').optional(),
+  limit: limitQuery,
+  cursor: queryValue('cursor').optional(),
   type: z.enum(['filter', 'event', 'csv']).optional(),
-  createdFrom: queryString('createdFrom').optional(),
-  createdTo: queryString('createdTo').optional(),
+  createdFrom: queryValue('createdFrom').optional(),
+  createdTo: queryValue('createdTo').optional(),
 });
 
 /** The `:id` route parameter: a positive integer within the INT UNSIGNED range. */

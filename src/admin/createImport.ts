@@ -8,11 +8,11 @@
  * insert: two concurrent requests using one key on two DIFFERENT endpoints can both succeed, because there is no
  * cross-table unique constraint.
  */
-import { createHash } from 'node:crypto';
 import type Koa from 'koa';
 import multer from '@koa/multer';
 import type { Deps } from '../lib/deps.js';
-import type { Logger } from '../lib/logger.js';
+import { differentRequest, isDuplicateKey, keyUsedElsewhere, sha256Hex } from './idempotency.js';
+import { enqueueAfterCommit } from './enqueueAfterCommit.js';
 import { validationError } from '../lib/errors.js';
 import { formatTimestamp, parseRequestTimestamp, truncateToSecond } from '../lib/time.js';
 import { withTransaction } from '../db/index.js';
@@ -32,25 +32,6 @@ export const importUpload = (deps: Deps) =>
     storage: multer.memoryStorage(),
     limits: { fileSize: Math.max(deps.config.csvMaxBytes, DEFAULT_CSV_MAX_BYTES), files: 1, fields: 1 },
   }).fields([{ name: 'file', maxCount: 1 }]);
-
-const DIFFERENT_REQUEST = 'Idempotency-Key already used for a different request';
-
-/** True when the key was already used by another endpoint (a filter/event create or an import run). */
-async function keyUsedElsewhere(deps: Deps, key: string): Promise<boolean> {
-  const [n, r] = await Promise.all([
-    deps.db('notifications').where({ request_key: key }).first('id'),
-    deps.db('import_runs').where({ request_key: key }).first('id'),
-  ]);
-  return Boolean(n || r);
-}
-
-const isDuplicateImportKey = (err: unknown) => {
-  const e = err as { code?: string; message?: string; sqlMessage?: string };
-  return (
-    e?.code === 'ER_DUP_ENTRY' &&
-    `${e.message ?? ''} ${e.sqlMessage ?? ''}`.includes('uq_imports_request_key')
-  );
-};
 
 function readParts(ctx: Koa.Context): { json: string; file: Buffer } {
   const body = (ctx.request.body ?? {}) as Record<string, unknown>;
@@ -73,7 +54,7 @@ async function replied(deps: Deps, ctx: Koa.Context, key: string, hash: string):
     .where({ request_key: key })
     .first('id', 'notification_id', 'request_hash');
   if (!existing) return false;
-  if (existing.request_hash !== hash) throw validationError(DIFFERENT_REQUEST);
+  if (existing.request_hash !== hash) throw differentRequest();
   ctx.status = 202;
   ctx.body = { id: existing.id, notificationId: existing.notification_id };
   return true;
@@ -98,9 +79,9 @@ export async function createImport(deps: Deps, ctx: Koa.Context) {
     link: body.link,
     liveDate: formatTimestamp(liveDate),
   });
-  const hash = createHash('sha256').update(normalised).update('\n').update(file).digest('hex');
+  const hash = sha256Hex(normalised, '\n', file);
   if (await replied(deps, ctx, key, hash)) return;
-  if (await keyUsedElsewhere(deps, key)) throw validationError(DIFFERENT_REQUEST);
+  if (await keyUsedElsewhere(deps, key, 'imports')) throw differentRequest();
 
   // A new key: only now validate against the current clock and caps.
   const now = truncateToSecond(deps.clock.now());
@@ -142,25 +123,22 @@ export async function createImport(deps: Deps, ctx: Koa.Context) {
       return { id: id!, notificationId: notificationId!, runId: runId! };
     });
   } catch (err) {
-    if (!isDuplicateImportKey(err)) throw err;
+    if (!isDuplicateKey(err, 'imports')) throw err;
   }
 
   if (!created) {
     if (await replied(deps, ctx, key, hash)) return;
-    throw validationError(DIFFERENT_REQUEST);
+    throw differentRequest();
   }
 
   // §7.3 step 3: enqueue after commit; a failed enqueue does not fail the request (housekeeping re-enqueues).
-  try {
-    await deps.queue.enqueue('process_import', {
-      importId: created.id,
-      runId: created.runId,
-      requestId: ctx.state.requestId,
-    });
-  } catch (err) {
-    const log = (ctx.state.log as Logger | undefined) ?? deps.log;
-    log.error({ err, importId: created.id }, 'process_import enqueue failed');
-  }
+  await enqueueAfterCommit(
+    deps,
+    ctx,
+    'process_import',
+    { importId: created.id, runId: created.runId, requestId: ctx.state.requestId },
+    { importId: created.id },
+  );
   ctx.status = 202;
   ctx.body = { id: created.id, notificationId: created.notificationId };
 }

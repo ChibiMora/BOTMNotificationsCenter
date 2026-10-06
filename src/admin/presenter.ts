@@ -4,7 +4,7 @@ import type { Config } from '../config/index.js';
 import type { NotificationRow, NotificationTypeName } from '../lib/rows.js';
 import { formatTimestamp } from '../lib/time.js';
 import { toUrl } from '../lib/urls.js';
-import { AppError } from '../lib/errors.js';
+import { notFound } from '../lib/errors.js';
 
 /** A notification row joined with its type name. */
 export type NamedNotificationRow = NotificationRow & { type_name: NotificationTypeName };
@@ -63,6 +63,6 @@ export const namedNotifications = (db: Knex) =>
 /** Loads one notification with its type name, or throws 404. */
 export async function loadNotification(db: Knex, id: number): Promise<NamedNotificationRow> {
   const row = (await namedNotifications(db).where('n.id', id).first()) as NamedNotificationRow | undefined;
-  if (!row) throw new AppError('NOT_FOUND', 404, 'notification not found');
+  if (!row) throw notFound('notification');
   return row;
 }
