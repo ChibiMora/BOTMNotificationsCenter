@@ -6,6 +6,7 @@ import { listNotifications } from './listNotifications.js';
 import { getNotification } from './getNotification.js';
 import { createFilter } from './createFilter.js';
 import { createEvent } from './createEvent.js';
+import { updateNotification } from './updateNotification.js';
 
 export function adminRouter(deps: Deps): Router {
   const router = new Router({ prefix: '/admin', sensitive: true });
@@ -13,5 +14,6 @@ export function adminRouter(deps: Deps): Router {
   router.get('/notifications/:id', (ctx) => getNotification(deps, ctx));
   router.post('/notifications/filter', idempotencyKey(), (ctx) => createFilter(deps, ctx));
   router.post('/notifications/event', idempotencyKey(), (ctx) => createEvent(deps, ctx));
+  router.patch('/notifications/:id', (ctx) => updateNotification(deps, ctx));
   return router;
 }
