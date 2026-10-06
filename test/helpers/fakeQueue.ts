@@ -1,4 +1,4 @@
-import type { Queue, JobType, JobHandlers, ConsumeOptions } from '../../src/queue/queue.js';
+import type { Queue, JobType, JobHandlers, JobPayloads, ConsumeOptions } from '../../src/queue/queue.js';
 /**
  * In-memory Queue (§6.3): records enqueues; runAll drives handlers synchronously in order.
  * `runAt` is recorded on `enqueued` but NOT honoured: every job runs when `runAll` is called, whatever its runAt.
@@ -11,7 +11,7 @@ export class FakeQueue implements Queue {
   private nextError?: Error;
   private ran = 0;
   constructor(private readonly o: { maxAttempts?: number } = {}) {}
-  async enqueue(type: JobType, payload: object, opts?: { runAt?: Date }) {
+  async enqueue<T extends JobType>(type: T, payload: JobPayloads[T], opts?: { runAt?: Date }) {
     if (this.nextError) {
       const e = this.nextError;
       this.nextError = undefined;
@@ -39,7 +39,9 @@ export class FakeQueue implements Queue {
       }
       for (let attempt = 1; ; attempt++) {
         try {
-          await handler(job.payload, { attempt, heartbeat: async () => {} });
+          await (
+            handler as (p: unknown, c: { attempt: number; heartbeat(): Promise<void> }) => Promise<void>
+          )(job.payload, { attempt, heartbeat: async () => {} });
           break;
         } catch (e) {
           if (attempt >= max) {

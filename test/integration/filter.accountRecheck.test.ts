@@ -59,7 +59,7 @@ describe('account_recheck', () => {
     expect(new Date(got[0].sent_at).getTime()).toBe(deps.clock.now().getTime());
     const written = () =>
       (deps.metrics as RecordingMetrics).calls
-        .filter((c) => c.name === 'account_recheck.deliveries_written')
+        .filter((c) => c.name === 'account_recheck_deliveries_written')
         .map((c) => c.value);
     expect(written()).toEqual([1]);
     await accountRecheck(deps, { accountId: 1 }, ctx);
@@ -143,10 +143,10 @@ describe('account_recheck reads the writer, never the lagging replica', () => {
     await expect(accountRecheck(deps, { accountId: 1 }, ctx)).resolves.toBeUndefined();
     expect((await forAccount(1)).map((r) => r.notification_id)).toEqual([good.id]);
     expect((deps.metrics as RecordingMetrics).calls).toContainEqual(
-      expect.objectContaining({ name: 'account_recheck.unusable_filters', value: 1 }),
+      expect.objectContaining({ name: 'account_recheck_unusable_filters', value: 1 }),
     );
     expect(
-      (deps.metrics as RecordingMetrics).calls.filter((c) => c.name === 'account_recheck.unusable_filters'),
+      (deps.metrics as RecordingMetrics).calls.filter((c) => c.name === 'account_recheck_unusable_filters'),
     ).toHaveLength(2);
     expect(await db('notification_deliveries').whereIn('notification_id', [bad1.id, bad2.id])).toEqual([]);
   });

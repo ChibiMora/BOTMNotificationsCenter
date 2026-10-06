@@ -22,7 +22,7 @@ type FailReason = 'removed' | 'dead' | 'file_missing';
 
 /**
  * Marks the run (only while still processing) and the import failed. Returns whether this call moved the run from
- * `processing` to `failed`; only then is `process_import.failed` counted and the ending logged at warn (ids and reason
+ * `processing` to `failed`; only then is `process_import_failed` counted and the ending logged at warn (ids and reason
  * only).
  */
 async function failRun(
@@ -44,7 +44,7 @@ async function failRun(
     return true;
   });
   if (changed) {
-    deps.metrics.count('process_import.failed', 1, { reason });
+    deps.metrics.count('process_import_failed', 1, { reason });
     deps.log.warn({ importId, runId, reason }, 'process_import failed');
   }
   return changed;
@@ -144,10 +144,10 @@ export const processImport: (
     await trx('import_files').where({ import_id: importId }).delete();
     return true;
   });
-  deps.metrics.count('process_import.deliveries_written', deliveriesInserted);
+  deps.metrics.count('process_import_deliveries_written', deliveriesInserted);
   if (!completed) return;
-  deps.metrics.count('process_import.unknown_accounts', errors.length);
-  deps.metrics.count('process_import.completed');
+  deps.metrics.count('process_import_unknown_accounts', errors.length);
+  deps.metrics.count('process_import_completed');
   // Ids and counts only: never account lists or content.
   deps.log.info(
     {

@@ -1,8 +1,9 @@
 // Housekeeping timer (§8.3): recovery paths and retention, every HOUSEKEEPING_CRON on the leader.
 import type { Deps } from '../lib/deps.js';
+import type { JobPayloads, JobType } from '../queue/queue.js';
 import type { Timer } from './index.js';
 import { cronSchedule } from './schedule.js';
-import { cancelledScheduledDeliveries } from '../lib/cancellation.js';
+import { CONTENDED, cancelledScheduledDeliveries, deleteCancelledLocked } from '../lib/cancellation.js';
 import { monthKey } from '../lib/time.js';
 import { activeFilterNotifications } from '../lib/filterNotifications.js';
 
@@ -14,6 +15,16 @@ const DAY_MS = 86_400_000;
 export interface HousekeepingOptions {
   /** Rows per scan chunk (tests use a small one). */
   chunk?: number;
+}
+
+/** Each enqueue is caught on its own (as rescan does): one failure is counted and logged, the rest still run. */
+async function enqueueOne<T extends JobType>(deps: Deps, type: T, payload: JobPayloads[T]): Promise<void> {
+  try {
+    await deps.queue.enqueue(type, payload);
+  } catch (err) {
+    deps.metrics.count('housekeeping_enqueue_failed', 1, { type });
+    deps.log.error({ err, type, payload: payload as object }, 'housekeeping: enqueue failed');
+  }
 }
 
 export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): Promise<void> {
@@ -35,16 +46,35 @@ export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): 
       .orderBy('n.id')
       .limit(chunk)
       .pluck('n.id');
-    for (const notificationId of ids) await queue.enqueue('fanout_filter', { notificationId });
+    for (const notificationId of ids) await enqueueOne(deps, 'fanout_filter', { notificationId });
     if (ids.length < chunk) break;
     afterId = ids[ids.length - 1]!;
   }
 
-  for (;;) {
-    const ids: number[] = await cancelledScheduledDeliveries(db).limit(chunk).pluck('d.id');
-    if (ids.length === 0) break;
-    await db('notification_deliveries').whereIn('id', ids).del();
-    if (ids.length < chunk) break;
+  // Same locked delete as cancel_scheduled, per notification; keyset on d.id so skipped (locked) rows end the scan.
+  for (let afterId = 0; ;) {
+    const rows: Array<{ id: number; notificationId: number }> = await cancelledScheduledDeliveries(db)
+      .andWhere('d.id', '>', afterId)
+      .orderBy('d.id')
+      .limit(chunk)
+      .select('d.id as id', 'd.notification_id as notificationId');
+    if (rows.length === 0) break;
+    const byNotification = new Map<number, number[]>();
+    for (const r of rows) {
+      const list = byNotification.get(Number(r.notificationId)) ?? [];
+      list.push(Number(r.id));
+      byNotification.set(Number(r.notificationId), list);
+    }
+    for (const [notificationId, ids] of byNotification) {
+      const deleted = await deleteCancelledLocked(db, notificationId, ids);
+      if (deleted === CONTENDED)
+        deps.log.info(
+          { notificationId },
+          'housekeeping: notification row locked elsewhere, cancelled rows skipped',
+        );
+    }
+    if (rows.length < chunk) break;
+    afterId = Number(rows[rows.length - 1]!.id);
   }
 
   const stale = await db('imports as i')
@@ -56,7 +86,7 @@ export async function housekeeping(deps: Deps, opts: HousekeepingOptions = {}): 
       'i.id',
     )
     .select('i.id as importId', 'r.run_id as runId');
-  for (const s of stale) await queue.enqueue('process_import', { importId: s.importId, runId: s.runId });
+  for (const s of stale) await enqueueOne(deps, 'process_import', { importId: s.importId, runId: s.runId });
 
   await db('import_files')
     .whereIn(

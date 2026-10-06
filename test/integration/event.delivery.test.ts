@@ -78,7 +78,7 @@ describe('event_delivery', () => {
     await makeNotification(db, 'event', { event_trigger: 'shipped', active: true, delay: 2 });
     await eventDelivery(deps, payload(), ctx);
     expect(await rows()).toHaveLength(2);
-    expect(counted(deps, 'event_deliveries_inserted')).toBe(2);
+    expect(counted(deps, 'event_delivery_inserted')).toBe(2);
   });
 
   it('record() twice with one key → one delivery; with two keys → two', async () => {

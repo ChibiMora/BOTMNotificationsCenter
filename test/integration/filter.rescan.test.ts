@@ -87,14 +87,14 @@ describe('rescan: paging and failure metric', () => {
     await rescan(exact, { page: 3 }); // 6 notifications: two full pages, then an empty one
     expect(fanouts(exact.queue as FakeQueue)).toHaveLength(6);
   });
-  it('counts rescan.enqueue_failed for a failed enqueue', async () => {
+  it('counts rescan_enqueue_failed for a failed enqueue', async () => {
     const deps = makeTestDeps({ db });
     await makeNotification(db, 'filter', { active: true });
     await makeNotification(db, 'filter', { active: true });
     (deps.queue as FakeQueue).failNextEnqueue(new Error('queue down'));
     await rescan(deps);
     const m = (deps.metrics as RecordingMetrics).calls;
-    expect(m).toContainEqual(expect.objectContaining({ name: 'rescan.enqueue_failed', value: 1 }));
-    expect(m).toContainEqual(expect.objectContaining({ name: 'rescan.enqueued', value: 1 }));
+    expect(m).toContainEqual(expect.objectContaining({ name: 'rescan_enqueue_failed', value: 1 }));
+    expect(m).toContainEqual(expect.objectContaining({ name: 'rescan_enqueued', value: 1 }));
   });
 });

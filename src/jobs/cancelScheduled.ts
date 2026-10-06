@@ -17,16 +17,11 @@
 // So the job never waits on a lock. It holds the shared notification lock and up to one chunk of delivery-row
 // exclusive locks only from step 1 to the chunk's commit; an admin deactivate/remove taking FOR UPDATE NOWAIT inside
 // that window gets a retryable 409.
-import { CANCELLED_SQL, cancelledScheduledDeliveries } from '../lib/cancellation.js';
+import { CONTENDED, cancelledScheduledDeliveries, deleteCancelledLocked } from '../lib/cancellation.js';
 import type { Deps } from '../lib/deps.js';
 import type { JobContext, JobPayloads } from '../queue/queue.js';
 
 const CHUNK = 5_000;
-const ER_LOCK_NOWAIT = 3572;
-const CONTENDED = Symbol('contended');
-
-const placeholders = (ids: readonly number[]) => ids.map(() => '?').join(', ');
-
 /** Deletes in id-ordered chunks of `chunk` over one pass of the candidates; heartbeats between chunks. */
 export async function cancelScheduledRun(
   deps: Deps,
@@ -47,30 +42,7 @@ export async function cancelScheduledRun(
     ).map(Number);
     if (ids.length === 0) break;
     lastId = ids[ids.length - 1]!;
-    const deleted = await deps.db.transaction(async (trx) => {
-      try {
-        await trx.raw('SELECT 1 FROM notifications WHERE id = ? FOR SHARE NOWAIT', [notificationId]);
-      } catch (err) {
-        if ((err as { errno?: unknown })?.errno === ER_LOCK_NOWAIT) return CONTENDED;
-        throw err;
-      }
-      const [locked] = (await trx.raw(
-        `SELECT id FROM notification_deliveries WHERE id IN (${placeholders(ids)}) FOR UPDATE SKIP LOCKED`,
-        ids,
-      )) as [Array<{ id: number }>];
-      if (locked.length === 0) return 0;
-      const lockedIds = locked.map((r) => Number(r.id));
-      // Re-checked through the rule: a row that stopped being cancelled since the candidate read survives.
-      const [result] = await trx.raw(
-        `DELETE FROM notification_deliveries AS d
-         WHERE d.id IN (${placeholders(lockedIds)}) AND d.sent_at IS NULL
-           AND EXISTS (SELECT 1 FROM notifications n WHERE n.id = d.notification_id AND ${CANCELLED_SQL})`,
-        lockedIds,
-      );
-      const count = Number(result?.affectedRows);
-      if (!Number.isFinite(count)) throw new Error('cancel_scheduled delete returned no affected-row count');
-      return count;
-    });
+    const deleted = await deleteCancelledLocked(deps.db, notificationId, ids);
     if (deleted === CONTENDED) {
       deps.log.info(
         { notificationId },

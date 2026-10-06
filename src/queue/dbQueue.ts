@@ -19,7 +19,8 @@ import type { Config } from '../config/index.js';
 import type { Clock } from '../lib/clock.js';
 import type { Logger } from '../lib/logger.js';
 import type { Metrics } from '../lib/metrics.js';
-import type { ConsumeOptions, JobHandlers, JobType, Queue } from './queue.js';
+import { safeMetrics } from '../lib/safeMetrics.js';
+import type { ConsumeOptions, JobContext, JobHandlers, JobPayloads, JobType, Queue } from './queue.js';
 
 export interface DbQueueParts {
   db: Knex;
@@ -69,13 +70,18 @@ export class DbQueue implements Queue {
     private readonly config: Config,
     private readonly parts: DbQueueParts,
   ) {
+    this.parts = { ...parts, metrics: safeMetrics(parts.metrics, parts.log) };
     this.workerId = (parts.workerId ?? `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`).slice(
       0,
       64,
     );
   }
 
-  async enqueue(type: JobType, payload: object, opts: { runAt?: Date } = {}): Promise<void> {
+  async enqueue<T extends JobType>(
+    type: T,
+    payload: JobPayloads[T],
+    opts: { runAt?: Date } = {},
+  ): Promise<void> {
     await this.parts.db('jobs').insert({
       type,
       payload: JSON.stringify(payload),
@@ -300,7 +306,7 @@ export class DbQueue implements Queue {
     try {
       const handler = this.handlers?.[job.type];
       if (typeof handler !== 'function') throw new Error(`no handler registered for job type "${job.type}"`);
-      await handler(job.payload, {
+      await (handler as (p: unknown, c: JobContext) => Promise<void>)(job.payload, {
         attempt: job.attempts,
         heartbeat: () => this.heartbeat(job),
       });

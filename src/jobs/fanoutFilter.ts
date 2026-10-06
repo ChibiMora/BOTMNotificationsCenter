@@ -47,7 +47,7 @@ export const fanoutFilter: (
     eligibleAccounts(deps.dbReader, notification.filters);
   } catch (err) {
     if (err instanceof UnusableFiltersError) {
-      deps.metrics.count('fanout_filter.unusable_filters');
+      deps.metrics.count('fanout_filter_unusable_filters');
       deps.log.error(
         { notificationId, requestId: payload.requestId },
         'fanout_filter: unusable filters, notification cannot be sent',
@@ -102,7 +102,7 @@ export const fanoutFilter: (
     }
     await ctx.heartbeat();
   }
-  deps.metrics.count('fanout_filter.deliveries_written', written);
+  deps.metrics.count('fanout_filter_deliveries_written', written);
   deps.log.info(
     { notificationId, jobMonth, written, stopped, requestId: payload.requestId },
     'fanout_filter finished',

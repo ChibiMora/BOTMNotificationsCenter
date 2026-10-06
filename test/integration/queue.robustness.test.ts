@@ -47,7 +47,7 @@ describe('stand-in queue robustness', () => {
     const wait = () => new Promise<void>((r) => setImmediate(() => (++waits > 50 ? giveUp() : r())));
     const q = new DbQueue(config, parts({ manual: false, wait }));
     vi.spyOn(q, 'upkeep').mockRejectedValue(new Error('Lock wait timeout exceeded'));
-    await q.enqueue('event_delivery', { n: 1 });
+    await q.enqueue('event_delivery', { n: 1 } as never);
     let ran!: () => void;
     const done = new Promise<'ran'>((r) => (ran = () => r('ran')));
     const c = await q.consume(
@@ -60,8 +60,8 @@ describe('stand-in queue robustness', () => {
 
   it('concurrent poll() calls never exceed 10 in flight nor the fan-out cap', async () => {
     const q = new DbQueue(config, parts());
-    for (let i = 0; i < 15; i++) await q.enqueue('event_delivery', { i });
-    for (let i = 0; i < 5; i++) await q.enqueue('fanout_filter', { i });
+    for (let i = 0; i < 15; i++) await q.enqueue('event_delivery', { i } as never);
+    for (let i = 0; i < 5; i++) await q.enqueue('fanout_filter', { i } as never);
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     let running = 0;
@@ -132,7 +132,7 @@ describe('stand-in queue robustness', () => {
   it('a job settling while the loop is inside poll() makes the next wait return at once', async () => {
     const { sleeps, firstSleep, wait } = sleepRecorder();
     const q = new DbQueue(config, parts({ manual: false, wait }));
-    await q.enqueue('event_delivery', { n: 1 });
+    await q.enqueue('event_delivery', { n: 1 } as never);
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const inFlight = () => [...(q as unknown as { inFlight: Set<Promise<void>> }).inFlight];

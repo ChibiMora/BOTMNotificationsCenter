@@ -273,7 +273,7 @@ describe('process_import', () => {
   describe('logs and metrics', () => {
     const counted = (t: { deps: { metrics: unknown } }) =>
       (t.deps.metrics as RecordingMetrics).calls
-        .filter((c) => c.kind === 'count' && c.name.startsWith('process_import.'))
+        .filter((c) => c.kind === 'count' && c.name.startsWith('process_import_'))
         .map(({ name, value, dims }) => ({ name, value, ...(dims ? { dims } : {}) }));
 
     it('a completed run logs once at info with ids and counts, and counts its metrics', async () => {
@@ -293,9 +293,9 @@ describe('process_import', () => {
         deliveriesInserted: 3,
       });
       expect(counted(t)).toEqual([
-        { name: 'process_import.deliveries_written', value: 3 },
-        { name: 'process_import.unknown_accounts', value: 2 },
-        { name: 'process_import.completed', value: 1 },
+        { name: 'process_import_deliveries_written', value: 3 },
+        { name: 'process_import_unknown_accounts', value: 2 },
+        { name: 'process_import_completed', value: 1 },
       ]);
       await processImport(t.deps, payload, ctx);
       expect(counted(t)).toHaveLength(3);
@@ -309,12 +309,12 @@ describe('process_import', () => {
     const runStatus = async (runId: number) =>
       (await db('import_runs').where({ id: runId }).first('status')).status as string;
 
-    it('removed notification counts process_import.failed reason=removed once and logs once at warn', async () => {
+    it('removed notification counts process_import_failed reason=removed once and logs once at warn', async () => {
       const { t, payload, notificationId } = await upload(file);
       const warns = warned(t);
       await db('notifications').where({ id: notificationId }).update({ removed: true });
       await processImport(t.deps, payload, ctx);
-      expect(counted(t)).toEqual([{ name: 'process_import.failed', value: 1, dims: { reason: 'removed' } }]);
+      expect(counted(t)).toEqual([{ name: 'process_import_failed', value: 1, dims: { reason: 'removed' } }]);
       expect(warns()).toHaveLength(1);
       expect(warns()[0]![0]).toEqual({ importId: payload.importId, runId: payload.runId, reason: 'removed' });
     });
@@ -343,7 +343,7 @@ describe('process_import', () => {
       expect(await runStatus(payload.runId)).toBe('failed');
       expect((await db('imports').where({ id: payload.importId }).first('status')).status).toBe('failed');
       expect(counted(t)).toEqual([
-        { name: 'process_import.failed', value: 1, dims: { reason: 'file_missing' } },
+        { name: 'process_import_failed', value: 1, dims: { reason: 'file_missing' } },
       ]);
       expect(warns()).toHaveLength(1);
       expect(warns()[0]![0]).toEqual({
@@ -358,7 +358,7 @@ describe('process_import', () => {
       const warns = warned(t);
       await onProcessImportDead(t.deps, payload, new Error('boom'));
       expect(await runStatus(payload.runId)).toBe('failed');
-      expect(counted(t)).toEqual([{ name: 'process_import.failed', value: 1, dims: { reason: 'dead' } }]);
+      expect(counted(t)).toEqual([{ name: 'process_import_failed', value: 1, dims: { reason: 'dead' } }]);
       expect(warns()).toHaveLength(1);
       expect(warns()[0]![0]).toEqual({ importId: payload.importId, runId: payload.runId, reason: 'dead' });
       await onProcessImportDead(t.deps, payload, new Error('boom'));
