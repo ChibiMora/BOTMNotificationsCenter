@@ -394,7 +394,8 @@ describe('dbQueue error isolation', () => {
     const q = new DbQueue(
       config,
       parts({
-        db: flakyDb({ failures: 4 }),
+        // 5 failures: the first upkeep (run once, its own try/catch) consumes one, then four failed polls back off.
+        db: flakyDb({ failures: 5 }),
         manual: false,
         wait: async (ms) => {
           delays.push(ms);

@@ -42,6 +42,7 @@ interface ClaimedJob {
 const CLAIM_LIMIT = 10;
 const DONE_RETENTION_DAYS = 7;
 const UPKEEP_INTERVAL_MS = 60_000;
+const DONE_DELETE_CHUNK = 1_000;
 const BACKOFF_MAX_MS = 60_000;
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
@@ -57,6 +58,10 @@ export class DbQueue implements Queue {
   private stopped = false;
   /** Wakes the poll loop's wait early (job settled, stop()). */
   private wake?: () => void;
+  /** Set when a wake-up fires while nobody is waiting (e.g. a job settled during poll()); the next wait returns at once. */
+  private pendingWake = false;
+  /** Serialises claim steps so the free-slot and fan-out-slot counts read before a claim's await stay valid. */
+  private claimChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly config: Config,
@@ -96,21 +101,33 @@ export class DbQueue implements Queue {
         new Promise<void>((r) => {
           timer = setTimeout(r, ms);
         }));
-    const wait = (ms: number) =>
-      Promise.race([sleep(ms), new Promise<void>((r) => (this.wake = r))]).finally(() => {
+    const wait = (ms: number) => {
+      if (this.pendingWake) {
+        this.pendingWake = false;
+        return Promise.resolve();
+      }
+      return Promise.race([sleep(ms), new Promise<void>((r) => (this.wake = r))]).finally(() => {
         clearTimeout(timer);
         this.wake = undefined;
       });
+    };
     const base = this.config.queuePollSeconds * 1000;
     const loop = async () => {
       let errors = 0;
       while (!stopping) {
         let claimed = 0;
-        try {
-          if (Date.now() - this.lastUpkeep >= UPKEEP_INTERVAL_MS) {
+        // Upkeep has its own try/catch and its gate advances whatever the result, so a persistently failing upkeep
+        // (e.g. lock-wait timeouts) never stops claiming. The gate uses the injected clock like every other "now".
+        const nowMs = this.parts.clock.now().getTime();
+        if (nowMs - this.lastUpkeep >= UPKEEP_INTERVAL_MS) {
+          this.lastUpkeep = nowMs;
+          try {
             await this.upkeep();
-            this.lastUpkeep = Date.now();
+          } catch (e) {
+            this.parts.log.error({ err: e }, 'queue upkeep failed; claiming continues');
           }
+        }
+        try {
           claimed = await this.poll();
           errors = 0;
         } catch (e) {
@@ -143,11 +160,13 @@ export class DbQueue implements Queue {
   /** One non-blocking claim step: claims up to the free in-flight capacity, starts the jobs, returns how many. */
   async poll(): Promise<number> {
     if (this.stopped) return 0;
-    const free = CLAIM_LIMIT - this.inFlight.size;
-    if (free <= 0) return 0;
-    const jobs = await this.claim(free);
-    for (const j of jobs) this.track(j);
-    return jobs.length;
+    return this.serial(async () => {
+      const free = CLAIM_LIMIT - this.inFlight.size;
+      if (free <= 0) return 0;
+      const jobs = await this.claimNow(free);
+      for (const j of jobs) this.track(j);
+      return jobs.length;
+    });
   }
 
   /** Resolves once every in-flight job has settled. */
@@ -158,15 +177,26 @@ export class DbQueue implements Queue {
   /** One claim-and-run step that awaits the jobs it claimed (tests); resolves with how many were claimed. */
   async runOnce(): Promise<number> {
     if (this.stopped) return 0;
-    const jobs = await this.claim(Math.max(0, CLAIM_LIMIT - this.inFlight.size));
-    await Promise.all(jobs.map((j) => this.track(j)));
-    return jobs.length;
+    const started = await this.serial(async () => {
+      const jobs = await this.claimNow(Math.max(0, CLAIM_LIMIT - this.inFlight.size));
+      return jobs.map((j) => this.track(j));
+    });
+    await Promise.all(started);
+    return started.length;
+  }
+
+  /** Runs claim steps one at a time on this instance (poll(), runOnce() and claim() may be called concurrently). */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.claimChain.then(fn);
+    this.claimChain = next.catch(() => undefined);
+    return next;
   }
 
   private track(job: ClaimedJob): Promise<void> {
     const p = this.run(job).finally(() => {
       this.inFlight.delete(p);
-      this.wake?.();
+      if (this.wake) this.wake();
+      else this.pendingWake = true;
     });
     this.inFlight.add(p);
     return p;
@@ -176,7 +206,11 @@ export class DbQueue implements Queue {
    * Claims up to `limit` due jobs (FOR UPDATE SKIP LOCKED) with attempts left. The fan-out cap is applied in the query:
    * other types are selected separately, so fan-outs ahead of them in the queue never block them.
    */
-  async claim(limit = CLAIM_LIMIT): Promise<ClaimedJob[]> {
+  claim(limit = CLAIM_LIMIT): Promise<ClaimedJob[]> {
+    return this.serial(() => this.claimNow(limit));
+  }
+
+  private async claimNow(limit: number): Promise<ClaimedJob[]> {
     if (limit <= 0) return [];
     const now = this.parts.clock.now();
     const fanoutSlots = Math.min(limit, Math.max(0, this.config.fanoutMaxConcurrent - this.fanoutInFlight));
@@ -355,10 +389,34 @@ export class DbQueue implements Queue {
       .andWhere('locked_at', '<', leaseCutoff)
       .andWhere('attempts', '<', this.config.jobMaxAttempts)
       .update({ status: 'queued', locked_by: null, locked_at: null });
-    await db('jobs')
-      .where('status', 'done')
-      .andWhere('locked_at', '<', new Date(now.getTime() - DONE_RETENTION_DAYS * DAY_MS))
-      .del();
+    // A queued row with no attempts left (JOB_MAX_ATTEMPTS lowered) is never claimed: dead-letter it, fenced on
+    // status and attempts so onDead runs exactly once.
+    const stranded: ClaimedJob[] = await db('jobs')
+      .select('id', 'type', 'payload', 'attempts')
+      .where('status', 'queued')
+      .andWhere('attempts', '>=', this.config.jobMaxAttempts);
+    for (const j of stranded) {
+      const error = new Error(
+        `no attempts left (${j.attempts} >= JOB_MAX_ATTEMPTS ${this.config.jobMaxAttempts})`,
+      );
+      const changed = await db('jobs')
+        .where({ id: j.id, status: 'queued', attempts: j.attempts })
+        .update({ status: 'dead', locked_by: null, locked_at: now, last_error: error.message });
+      if (changed === 1) {
+        const payload = typeof j.payload === 'string' ? JSON.parse(j.payload) : j.payload;
+        await this.callOnDead(j.type, payload, error, j.id);
+      }
+    }
+    // Chunked so one large delete never holds locks long enough to time out.
+    const doneCutoff = new Date(now.getTime() - DONE_RETENTION_DAYS * DAY_MS);
+    for (;;) {
+      const deleted = await db('jobs')
+        .where('status', 'done')
+        .andWhere('locked_at', '<', doneCutoff)
+        .limit(DONE_DELETE_CHUNK)
+        .del();
+      if (deleted < DONE_DELETE_CHUNK) break;
+    }
   }
 
   /** Not part of Queue: housekeeping calls it when the configured queue provides it (§8.3). Returns rows deleted. */

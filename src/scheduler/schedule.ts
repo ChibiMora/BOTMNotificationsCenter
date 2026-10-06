@@ -11,7 +11,7 @@ const RANGES: Array<[number, number]> = [
   [0, 23],
   [1, 31],
   [1, 12],
-  [0, 6],
+  [0, 7], // day of week: 0 and 7 are both Sunday (standard cron); 7 is folded to 0 below
 ];
 
 /** One list item: `*`, `*\/n`, `a`, `a-b` or `a-b/n`. Anything else (names, L, W, #, ?, `a/n`) is rejected. */
@@ -40,7 +40,8 @@ const minuteOf = (d: Date) => Math.floor(d.getTime() / 60_000);
 export function cronSchedule(expr: string): Schedule {
   const fields = expr.trim().split(/\s+/);
   if (fields.length !== 5) throw new Error(`invalid cron expression: ${expr}`);
-  const [mi, h, dom, mon, dow] = fields.map((f, i) => parseField(f, RANGES[i]!));
+  const [mi, h, dom, mon, dowRaw] = fields.map((f, i) => parseField(f, RANGES[i]!));
+  const dow = new Set([...dowRaw!].map((d) => (d === 7 ? 0 : d)));
   // Standard cron: when both day fields are restricted (neither starts with `*`), a day matches if EITHER does.
   const bothDaysRestricted = !fields[2]!.startsWith('*') && !fields[4]!.startsWith('*');
   const dayMatches = (d: Date) =>
