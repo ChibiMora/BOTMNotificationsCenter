@@ -12,10 +12,17 @@ const SESSION_SQL =
  *
  *  FOUND_ROWS is disabled ('-FOUND_ROWS'): `update()` and affectedRows report rows CHANGED, not rows matched. An
  *  update that matches a row but writes identical values returns 0, so callers must not treat 0 as "not found".
- *  insertDeliveries relies on this: with ON DUPLICATE KEY UPDATE id = id a duplicate counts 0, a new row 1. */
+ *  insertDeliveries relies on this: with ON DUPLICATE KEY UPDATE id = id a duplicate counts 0, a new row 1.
+ *
+ *  compileSqlOnError is false: by default knex rewrites a failed query's error message to the SQL with its bound
+ *  values filled in, which would put notification content into every log line that records the error. With it
+ *  off the message is the uncompiled SQL (placeholders only) plus the driver's error text. mysql2 also attaches
+ *  `err.sql`, the query with its values interpolated, which a logger's err serializer would print; a
+ *  'query-error' listener deletes it before the error reaches any caller (transactions included). */
 export function createDb(url: string, opts: { pool?: Knex.PoolConfig } = {}): Knex {
-  return knexLib({
+  const db = knexLib({
     client: 'mysql2',
+    compileSqlOnError: false,
     connection: {
       uri: url,
       timezone: 'Z',
@@ -31,6 +38,11 @@ export function createDb(url: string, opts: { pool?: Knex.PoolConfig } = {}): Kn
         conn.query(SESSION_SQL, (e: Error | null) => done(e, conn)),
     },
   });
+  // Emitted before knex rethrows, so no caller ever sees the interpolated SQL.
+  db.on('query-error', (err: unknown) => {
+    if (err !== null && typeof err === 'object') delete (err as { sql?: unknown }).sql;
+  });
+  return db;
 }
 export const createWriterDb = (c: Config) => createDb(c.databaseUrl);
 export const createReaderDb = (c: Config) => createDb(c.databaseReaderUrl);
