@@ -4,7 +4,8 @@ import type { AddressInfo } from 'node:net';
 import { describe, it, expect, afterAll, vi } from 'vitest';
 import { testDb } from '../helpers/db.js';
 import { makeTestDeps } from '../helpers/deps.js';
-import { startWorker, stopWithDeadline, healthHandler } from '../../src/worker.js';
+import { startWorker, stopWithDeadline, healthHandler, serveHealth, shutdownOnce } from '../../src/worker.js';
+import { createLogger } from '../../src/lib/logger.js';
 import type { Deps } from '../../src/lib/deps.js';
 
 const db = testDb();
@@ -56,5 +57,57 @@ describe('worker lifecycle', () => {
     expect(await get(http.createServer(healthHandler(broken, () => true)), '/readyz')).toBe(503);
     expect(await get(http.createServer(healthHandler(db, () => false)), '/readyz')).toBe(503);
     expect(await get(http.createServer(healthHandler(db, () => true)), '/nope')).toBe(404);
+  });
+
+  /** startWorker with a consumer and scheduler whose stop() outcomes the test chooses. */
+  async function workerWith(schedulerStop: () => Promise<void>, consumerStop: () => Promise<void>) {
+    const deps = makeTestDeps({ db });
+    const cStop = vi.fn(consumerStop);
+    const sStop = vi.fn(schedulerStop);
+    vi.spyOn(deps.queue, 'consume').mockResolvedValue({ stop: cStop });
+    const worker = await startWorker(deps, { timers: [], startScheduler: () => ({ stop: sStop }) });
+    return { worker, cStop, sStop };
+  }
+
+  it('stop() still stops the consumer when the scheduler stop rejects, then rethrows', async () => {
+    const { worker, cStop, sStop } = await workerWith(
+      async () => Promise.reject(new Error('scheduler stop failed')),
+      async () => undefined,
+    );
+    await expect(worker.stop()).rejects.toThrow('scheduler stop failed');
+    expect(sStop).toHaveBeenCalledTimes(1);
+    expect(cStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() attempts both when both reject and rethrows the first error', async () => {
+    const { worker, cStop } = await workerWith(
+      async () => Promise.reject(new Error('scheduler stop failed')),
+      async () => Promise.reject(new Error('consumer stop failed')),
+    );
+    await expect(worker.stop()).rejects.toThrow('scheduler stop failed');
+    expect(cStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a health-server listen failure (EADDRINUSE) runs the orderly shutdown and exits non-zero', async () => {
+    const first = http.createServer();
+    await new Promise<void>((r) => first.listen(0, '127.0.0.1', r));
+    const { port } = first.address() as AddressInfo;
+    try {
+      const stop = vi.fn(async () => undefined);
+      let exited!: (code: number) => void;
+      const exitCode = new Promise<number>((r) => (exited = r));
+      const shutdown = shutdownOnce(stop, exited, createLogger('silent'));
+      const errors: Array<NodeJS.ErrnoException> = [];
+      const second = serveHealth(http.createServer(), port, '127.0.0.1', (err) => {
+        errors.push(err);
+        void shutdown(1);
+      });
+      expect(await exitCode).toBe(1);
+      expect(errors[0]?.code).toBe('EADDRINUSE');
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(second.listening).toBe(false);
+    } finally {
+      await new Promise((r) => first.close(r));
+    }
   });
 });
