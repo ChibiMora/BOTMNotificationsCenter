@@ -2,7 +2,7 @@
 // create = create + migrate + seed stand-in accounts (STANDINS=true); migrate = migrate only; drop = drop. Reserved schemas refused.
 // Reads only DATABASE_URL (its database replaced by <name>; DB_NAME is ignored), STANDINS and NODE_ENV — never the whole
 // application config, so a production release step needs nothing but the database settings.
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../src/lib/mainModule.js';
 import type { Config } from '../src/config/index.js';
 import { createDb, MIGRATIONS } from '../src/db/index.js';
 import { seedAccounts } from './seedAccounts.js';
@@ -70,7 +70,7 @@ async function main(cmd: Command, name: string, settings: Extract<DbScriptSettin
     await server.destroy();
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   const check = checkDbCommand(process.argv[2], process.argv[3]);
   if (!check.ok) {
     console.error(check.message);

@@ -20,8 +20,9 @@ COPY --from=build /app/dist ./dist
 # Application files stay root-owned (read-only to the runtime user `node`).
 USER node
 EXPOSE 3000
-# Probes HEALTH_PORT, else PORT, else 3000. The worker service (health on WORKER_HEALTH_PORT, default 3001) must set
-# HEALTH_PORT=$WORKER_HEALTH_PORT (or override the healthcheck), or it is reported unhealthy.
+# Probes HEALTH_PORT when set; otherwise PORT (default 3000), then WORKER_HEALTH_PORT (default 3001), healthy if
+# either answers 2xx. A container runs one process, so only that process's port answers on 127.0.0.1: the API and the
+# worker are both healthy without extra settings, even when they share one env file.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.HEALTH_PORT||process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD node -e "const e=process.env,p=e.HEALTH_PORT?[e.HEALTH_PORT]:[e.PORT||3000,e.WORKER_HEALTH_PORT||3001],t=i=>i<p.length?fetch('http://127.0.0.1:'+p[i]+'/healthz').then(r=>r.ok?process.exit(0):t(i+1),()=>t(i+1)):process.exit(1);t(0)"
 CMD ["node", "dist/src/api.js"]

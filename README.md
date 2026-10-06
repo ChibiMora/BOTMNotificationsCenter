@@ -70,8 +70,9 @@ them, remove the old ones in a later release); rollback is redeploying the previ
 release step `node dist/scripts/db.js migrate <DB_NAME>` needs only the database settings (`DATABASE_URL`; the argument
 names the database) — no application settings — and refuses `STANDINS=true` under `NODE_ENV=production`. Migrations
 are recorded by extension-less name, so a database migrated from the `.ts` sources and one migrated by the image agree.
-The image's HEALTHCHECK probes `HEALTH_PORT`, else `PORT`, else 3000; the worker service must set
-`HEALTH_PORT=$WORKER_HEALTH_PORT` (default 3001) or override the healthcheck.
+The image's HEALTHCHECK probes `HEALTH_PORT` when set; otherwise it tries `PORT` (default 3000), then
+`WORKER_HEALTH_PORT` (default 3001), and is healthy if either answers. Each container runs one process, so the API and
+the worker are healthy with no extra settings, even when they share one env file.
 
 ### Examples
 

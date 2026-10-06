@@ -1,7 +1,7 @@
 // Worker composition root (§6): builds Deps, consumes jobs from the handler registry, runs the timer registry,
 // serves /healthz and /readyz on WORKER_HEALTH_PORT. Importing this module starts nothing.
 import http from 'node:http';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from './lib/mainModule.js';
 import { loadConfig } from './config/index.js';
 import { createReaderDb, createWriterDb } from './db/index.js';
 import { systemClock } from './lib/clock.js';
@@ -170,7 +170,7 @@ async function main() {
   log.info({ port: config.workerHealthPort }, 'worker started');
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   main().catch((err) => {
     // The logger may not exist yet (config failure), so write to stderr directly.
     console.error('worker failed to start', err);
