@@ -40,3 +40,41 @@ Running list of every place the build had to choose because the tech design (`do
 | 27 | §9.8 | Whether the fixed window is clock-aligned, what `Retry-After` holds, and which limit applies to unknown paths are unspecified. | Window aligned to the clock minute; `Retry-After` is the seconds left in the window; unknown non-admin paths count against the member limit; health endpoints are not limited. | Confirmation |
 | 28 | §11.4 | The health response body and accepted methods are not specified. | `GET` and `HEAD` on `/healthz` and `/readyz`; success body `{ "status": "ok" }`; `/readyz` failure is the 503 `UNAVAILABLE` envelope. | Confirmation |
 | 29 | §10.4 | The test runner ignores "run files serially" when set per project, so database test files ran concurrently on one database. | The `test:integration` and `test:contract` scripts pass `--no-file-parallelism`. | Confirmation |
+
+## U2 Queue (interface + stand-in)
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 30 | §8.1 | The claim SQL uses the database's `UTC_TIMESTAMP()`, while the ground rules say all time comes from the injected clock; tests could not drive backoff or leases without sleeping. | Every "now" in the queue is a bound value from `deps.clock`. The queue exposes manual stepping (`claim`, `poll`, `runOnce`, `upkeep`, `drain`) for tests. | Tech-design change |
+| 31 | §8.1 | Completion writes match on job id alone. After a lease expires and another worker re-claims the job, the old worker's late result overwrote the new owner's row; a job could run twice at once and be dead-lettered twice. | Completion writes and `heartbeat()` are fenced on status, owner and attempt. A stale owner does nothing; `heartbeat()` throws "lease lost". A job with no attempts left is never claimed; upkeep dead-letters exhausted rows with `onDead` once. | Tech-design change |
+| 32 | §8.3 | "At most `FANOUT_MAX_CONCURRENT` fan-out jobs at a time" is not specified for the claim. Applied after the `LIMIT 10` select, a burst of fan-outs stalled every other job type. | The worker runs up to 10 jobs concurrently without waiting for a batch. The claim selects fan-outs and other jobs separately, so fan-outs never block other types. | Tech-design change |
+| 33 | §5.7, §8.1 | `jobs` has no completion timestamp, but `done` and `dead` rows are purged by age. | `locked_at` is set to the completion time for `done`/`dead` rows and retention is measured from it. | Tech-design change |
+| 34 | §8.3 | Housekeeping must purge dead jobs, but only `dbQueue.ts` may touch `jobs` and the `Queue` interface has no purge operation. | `purgeDead` is a method on the stand-in only; housekeeping calls it when the configured queue provides it. | Tech-design change |
+| 35 | §8.3, §4 | Schedules are cron expressions but no cron library is named. | `schedule.ts` implements standard five-field cron in UTC. An invalid expression fails worker start before anything runs. | Confirmation |
+| 36 | §8.3 | The leader lock name is a literal, which collides across databases on one server. No probe timeout is given, and a worker that silently lost the lock could keep running leader-only timers. | The lock name derives from `RESOURCE_NAMESPACE`. Probes time out after 5 s. Ownership is verified immediately before each leader-only run. Leader-only timers must be idempotent: a brief two-leader window cannot be fully excluded. | Tech-design change |
+| 37 | §8.4 | "Worker loops back off and resume" gives no growth or cap. Worker shutdown has no stated deadline. | The poll loop's wait doubles from the poll interval to a 60 s cap and resets on success. Shutdown has a 30 s deadline. | Confirmation |
+| 38 | §9.5 | The per-job log line must include "rows written", which the queue runner cannot know. | The queue logs job id, type, attempt, outcome and duration. Each handler logs and counts its own rows written. | Tech-design change |
+| 39 | §8.3 | An import's "current run" has no pointer in the schema; "failed for more than 30 days" has no reference column. | Current run = highest run id. Failure age is measured from `imports.updated_at`. The import handler must touch `imports.updated_at` after every chunk. | Confirmation |
+| 40 | §12 | The registries are owned by U2 but list files of U5, U7, U8 and U9. "Worker starts with empty registries" contradicts a complete handler map. | U2 created those files as stubs (handlers throw "not implemented"; timers do nothing). U2's tests inject their own handlers and timers, so replacing a stub breaks nothing. | Tech-design change |
+
+## U6 Member API
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 41 | §9.2, B14 | "Any string is looked up" — but comparing a non-ASCII value with the ASCII id column makes MySQL raise an error (a 500), and a trailing space matched a real id. | An id that is not exactly 15 printable ASCII characters is treated as not found without querying. Same status and body as any other non-visible id; never a 400. | Tech-design change |
+| 42 | §7.5 | A hand-edited cursor is not covered: a non-ASCII id part gave a 500 and fractional seconds repeated rows. | The cursor's id part must have the public-id shape and its time part must be a whole-second UTC timestamp; otherwise 400. | Confirmation |
+| 43 | §3.5 | PATCH does not say whether body validation or the visibility check comes first. | The body is validated first, so a bad body gives 400 for every id alike. Nothing about any id is revealed. | Confirmation |
+| 44 | §3.1 | `limit` of 0 or a negative value is not covered. | 400. | Confirmation |
+| 45 | §7.5 | The row-value cursor comparison may not let MySQL range-seek; not verifiable on test-sized data. | The design's form is kept. Check the query plan with realistic data. | Confirmation |
+| 46 | §12 | U1's tests used `/notifications` paths as placeholders while the member router was empty; they failed once U6 added the real routes. | Those probes moved to paths no contract uses; no assertion was weakened. | Confirmation |
+
+## U3 Admin read + create
+
+| # | Section | What was unclear or wrong | Choice made | Needs |
+|---|---|---|---|---|
+| 47 | §3.4 | The list cursor is defined as `{ c, i }`, but a cursor reused under different filters must be a 400, which two keys cannot detect. | The cursor carries a third key with a fingerprint of the filters it was issued under. | Tech-design change |
+| 48 | §9.4 | "SHA-256 of the request body" does not say which bytes. Reordered keys, or omitted filters versus `{}` versus empty arrays, would count as different requests although they store the same row. | The hash covers the normalised request as stored. A replay returns the current representation with 201, creates nothing and enqueues nothing. | Tech-design change |
+| 49 | §3.3 | "Control characters, including line breaks" does not cover the Unicode line and paragraph separators or ill-formed strings; trim order is unstated; `credits` has no upper bound. | U+2028, U+2029 and lone surrogates are rejected. Text is trimmed before the character check. Credit bounds are capped at 2147483647. | Tech-design change |
+| 50 | §3.4 | The request type of `delay` is "optional integer" while the response is `integer \| null`. | `delay: null` in a request is a 400. | Confirmation |
+| 51 | §5 intro | `created_at` on notifications is a database default, but `activatedAt` must equal it for an active create and tests run on a fixed clock. | `created_at` is written from the application clock. | Confirmation |
+| 52 | §3.1 vs §9.4 | A replay returns "the original status code" in one place and "the endpoint's success status" in the other. | Both are 201 for these endpoints. | Confirmation |
