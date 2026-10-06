@@ -29,11 +29,23 @@ const FAILED = 'trigger_enqueue_failed';
 
 const validAccountId = (id: unknown): id is number => Number.isSafeInteger(id) && (id as number) > 0;
 
-function validationError(e: TriggerEvent): string | undefined {
-  if (typeof e !== 'object' || e === null) return 'event is not an object';
+// The DATETIME range the delivery columns can store (whole days): an occurrence outside it can never be inserted.
+const MIN_OCCURRED_MS = Date.UTC(1000, 0, 1);
+const MAX_OCCURRED_MS = Date.UTC(9999, 0, 1); // exclusive: anything on 9998-12-31 is accepted
+
+interface EventFields {
+  type: unknown;
+  accountId: unknown;
+  occurredAt: unknown;
+  occurrenceKey: unknown;
+}
+
+function validationError(e: EventFields): string | undefined {
   if (typeof e.type !== 'string' || !EVENT_TRIGGERS.includes(e.type)) return 'unknown event type';
   if (!validAccountId(e.accountId)) return 'invalid account id';
-  if (!(e.occurredAt instanceof Date) || Number.isNaN(e.occurredAt.getTime())) return 'invalid occurredAt';
+  if (!(e.occurredAt instanceof Date)) return 'invalid occurredAt';
+  const at = e.occurredAt.getTime();
+  if (Number.isNaN(at) || at < MIN_OCCURRED_MS || at >= MAX_OCCURRED_MS) return 'invalid occurredAt';
   if (typeof e.occurrenceKey !== 'string' || e.occurrenceKey.length < 1 || e.occurrenceKey.length > 128) {
     return 'invalid occurrence key';
   }
@@ -51,15 +63,23 @@ export class NotificationTrigger {
     // Every property read happens inside safely(): a throwing getter or Proxy must not make record() reject.
     const context: Record<string, unknown> = { job: 'event_delivery' };
     await this.safely(context, async () => {
-      const key: unknown = event?.occurrenceKey;
-      if (typeof key === 'string') context.occurrenceKey = key.slice(0, 128);
-      const invalid = validationError(event);
-      if (invalid) throw new Error(invalid);
-      await this.deps.queue.enqueue('event_delivery', {
+      if (typeof event !== 'object' || event === null) throw new Error('event is not an object');
+      // Each property is read exactly ONCE: a getter cannot pass validation and then yield something else.
+      const fields: EventFields = {
         type: event.type,
         accountId: event.accountId,
-        occurredAt: event.occurredAt.toISOString(),
+        occurredAt: event.occurredAt,
         occurrenceKey: event.occurrenceKey,
+      };
+      if (typeof fields.occurrenceKey === 'string')
+        context.occurrenceKey = fields.occurrenceKey.slice(0, 128);
+      const invalid = validationError(fields);
+      if (invalid) throw new Error(invalid);
+      await this.deps.queue.enqueue('event_delivery', {
+        type: fields.type as EventTrigger,
+        accountId: fields.accountId as number,
+        occurredAt: (fields.occurredAt as Date).toISOString(),
+        occurrenceKey: fields.occurrenceKey as string,
       });
     });
   };

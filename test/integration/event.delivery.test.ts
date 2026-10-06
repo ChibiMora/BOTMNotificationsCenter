@@ -220,3 +220,59 @@ describe('event_delivery protects itself from a bad payload (no throw, no retry,
     expect(counted(deps, 'event_delivery_invalid_payload')).toBe(0);
   });
 });
+
+describe('event_delivery rejects an occurredAt that is not a strict, in-range UTC timestamp', () => {
+  const badAt: Array<[string, string]> = [
+    ['a local-time date string', 'Oct 5 2026'],
+    ['a bare number', '1'],
+    ['no Z suffix', '2026-10-04T14:00:00'],
+    ['an offset instead of Z', '2026-10-04T14:00:00+02:00'],
+    ['an impossible calendar date', '2026-02-30T00:00:00Z'],
+    ['a far-future year 9999', '9999-12-31T00:00:00Z'],
+    ['an extended-year timestamp', '+275760-09-13T00:00:00Z'],
+    ['a year before 1000', '0999-12-31T23:59:59Z'],
+  ];
+  for (const [label, occurredAt] of badAt) {
+    it(`${label} (${occurredAt}): logged and counted as invalid, nothing inserted, no throw`, async () => {
+      const deps = makeTestDeps({ db });
+      const warn = vi.spyOn(deps.log, 'warn');
+      await makeNotification(db, 'event', { event_trigger: 'shipped', active: true });
+      await expect(eventDelivery(deps, payload({ occurredAt }), ctx)).resolves.toBeUndefined();
+      expect(await rows()).toEqual([]);
+      expect(counted(deps, 'event_delivery_invalid_payload')).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ invalid: 'occurredAt' }),
+        expect.any(String),
+      );
+    });
+  }
+
+  it('fractional seconds with Z are accepted', async () => {
+    const deps = makeTestDeps({ db });
+    await makeNotification(db, 'event', { event_trigger: 'shipped', active: true });
+    await eventDelivery(deps, payload({ occurredAt: '2026-10-04T14:00:00.123Z' }), ctx);
+    expect(await rows()).toHaveLength(1);
+  });
+
+  it('a due_at computed past 9998-12-31 is an invalid payload: counted, nothing inserted, no throw', async () => {
+    const deps = makeTestDeps({ db });
+    await makeNotification(db, 'event', { event_trigger: 'shipped', active: true, delay: 5 });
+    await expect(
+      eventDelivery(deps, payload({ occurredAt: '9998-12-30T00:00:00Z' }), ctx),
+    ).resolves.toBeUndefined();
+    expect(await rows()).toEqual([]);
+    expect(counted(deps, 'event_delivery_invalid_payload')).toBe(1);
+  });
+
+  for (const [label, p] of [
+    ['null', null],
+    ['a number', 42],
+    ['a string', 'shipped'],
+  ] as const) {
+    it(`a ${label} payload is counted as invalid, not a TypeError`, async () => {
+      const deps = makeTestDeps({ db });
+      await expect(eventDelivery(deps, p as never, ctx)).resolves.toBeUndefined();
+      expect(counted(deps, 'event_delivery_invalid_payload')).toBe(1);
+    });
+  }
+});
