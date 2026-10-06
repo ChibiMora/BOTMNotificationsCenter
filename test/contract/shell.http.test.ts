@@ -4,6 +4,8 @@ import { testDb, testConfig } from '../helpers/db.js';
 
 const db = testDb();
 afterAll(() => db.destroy());
+/** Unknown by construction: no contract will ever route it, so it 404s for any authenticated caller. */
+const UNKNOWN = '/no-such-route';
 const config = {
   ...testConfig(),
   rateLimitMemberPerMin: 3,
@@ -14,25 +16,25 @@ describe('shell: rate limiting (§9.8)', () => {
   it('member limit: 429 + Retry-After; per account; window resets after a minute', async () => {
     const { request, clock } = testApp({ db, config });
     for (let i = 0; i < 3; i++)
-      expect((await request.get('/notifications').set('X-Account-Id', '10')).status).toBe(404);
-    const r = await request.get('/notifications').set('X-Account-Id', '10');
+      expect((await request.get(UNKNOWN).set('X-Account-Id', '10')).status).toBe(404);
+    const r = await request.get(UNKNOWN).set('X-Account-Id', '10');
     expect(r.status).toBe(429);
     expect(r.body).toEqual({ error: 'RATE_LIMITED' });
     // FixedClock starts at 14:30:00Z, the very start of a window.
     expect(r.headers['retry-after']).toBe('60');
     clock.advance(15_500);
-    const later = await request.get('/notifications').set('X-Account-Id', '10');
+    const later = await request.get(UNKNOWN).set('X-Account-Id', '10');
     expect(later.status).toBe(429);
     expect(later.headers['retry-after']).toBe('45');
     clock.advance(-15_500);
-    expect((await request.get('/notifications').set('X-Account-Id', '11')).status).toBe(404);
+    expect((await request.get(UNKNOWN).set('X-Account-Id', '11')).status).toBe(404);
     clock.advance(60_000);
-    expect((await request.get('/notifications').set('X-Account-Id', '10')).status).toBe(404);
+    expect((await request.get(UNKNOWN).set('X-Account-Id', '10')).status).toBe(404);
   });
   it('admin limit is separate from the member surface', async () => {
     const { request } = testApp({ db, config });
-    for (let i = 0; i < 3; i++) await request.get('/notifications').set('X-Account-Id', '1');
-    expect((await request.get('/notifications').set('X-Account-Id', '1')).status).toBe(429);
+    for (let i = 0; i < 3; i++) await request.get(UNKNOWN).set('X-Account-Id', '1');
+    expect((await request.get(UNKNOWN).set('X-Account-Id', '1')).status).toBe(429);
     for (let i = 0; i < 5; i++)
       expect((await request.get('/admin/x').set('X-Account-Id', '1')).status).toBe(404);
     const r = await request.get('/admin/x').set('X-Account-Id', '1');
@@ -42,9 +44,9 @@ describe('shell: rate limiting (§9.8)', () => {
   });
   it('state is per app instance', async () => {
     const a = testApp({ db, config }).request;
-    for (let i = 0; i < 4; i++) await a.get('/notifications').set('X-Account-Id', '20');
+    for (let i = 0; i < 4; i++) await a.get(UNKNOWN).set('X-Account-Id', '20');
     const b = testApp({ db, config }).request;
-    expect((await b.get('/notifications').set('X-Account-Id', '20')).status).toBe(404);
+    expect((await b.get(UNKNOWN).set('X-Account-Id', '20')).status).toBe(404);
   });
 });
 
@@ -74,7 +76,7 @@ describe('shell: health, body parsing, request id', () => {
   });
   it('malformed JSON body -> 400 VALIDATION_ERROR', async () => {
     const r = await request
-      .post('/notifications')
+      .post(UNKNOWN)
       .set('X-Account-Id', '10')
       .set('Content-Type', 'application/json')
       .send('{"a":');
@@ -87,7 +89,7 @@ describe('shell: health, body parsing, request id', () => {
   it('body over 1 MB -> 400 VALIDATION_ERROR', async () => {
     const big = JSON.stringify({ a: 'x'.repeat(1024 * 1024 + 10) });
     const r = await request
-      .post('/notifications')
+      .post(UNKNOWN)
       .set('X-Account-Id', '10')
       .set('Content-Type', 'application/json')
       .send(big);
@@ -95,12 +97,24 @@ describe('shell: health, body parsing, request id', () => {
     expect(r.body.error).toBe('VALIDATION_ERROR');
   });
   it('X-Request-Id is a UUID on every response, including errors', async () => {
-    for (const r of [await request.get('/healthz'), await request.get('/notifications')]) {
+    const ok = await request.get('/healthz');
+    const err = await request.get(UNKNOWN);
+    expect(ok.status).toBe(200);
+    expect(err.status).toBe(401);
+    for (const r of [ok, err]) {
       expect(r.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);
     }
   });
-  it('unknown path -> exactly { error: NOT_FOUND }', async () => {
-    const r = await request.get('/nope').set('X-Account-Id', '10');
+  it('unknown path -> exactly { error: NOT_FOUND } (401 first without a session)', async () => {
+    const anon = await request.get(UNKNOWN);
+    expect(anon.status).toBe(401);
+    expect(anon.body).toEqual({ error: 'UNAUTHORIZED' });
+    const r = await request.get(UNKNOWN).set('X-Account-Id', '10');
+    expect(r.status).toBe(404);
+    expect(r.body).toEqual({ error: 'NOT_FOUND' });
+  });
+  it('unknown path under a real member prefix -> exactly { error: NOT_FOUND }', async () => {
+    const r = await request.get('/notifications/x/y').set('X-Account-Id', '10');
     expect(r.status).toBe(404);
     expect(r.body).toEqual({ error: 'NOT_FOUND' });
   });

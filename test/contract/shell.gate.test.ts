@@ -26,7 +26,8 @@ function probeRouters(d: Deps) {
     ctx.body = { secret: 'admin-only' };
   });
   const member = memberRouter(d);
-  member.get('/notifications/:id', (ctx) => {
+  // Member probe on a path no contract will ever use, so it never collides with the real member routes.
+  member.get('/probe/member/:id', (ctx) => {
     ctx.body = { id: ctx.params.id };
   });
   member.post('/probe/echo', (ctx) => {
@@ -91,13 +92,13 @@ describe('shell: admin gate is case-insensitive and airtight (§3.1, §9.1)', ()
       expect((await rq.get(p).set('X-Account-Id', '1')).status, p).toBe(200);
     }
     for (let i = 0; i < 2; i++) {
-      expect((await rq.get('/notifications/1').set('X-Account-Id', '1')).status).toBe(200);
+      expect((await rq.get('/probe/member/1').set('X-Account-Id', '1')).status).toBe(200);
     }
     expect((await rq.get('/admin-x').set('X-Account-Id', '1')).status).toBe(429);
-    expect((await rq.get('/notifications/1').set('X-Account-Id', '1')).status).toBe(429);
+    expect((await rq.get('/probe/member/1').set('X-Account-Id', '1')).status).toBe(429);
   });
   it('member route is unaffected by the admin gate', async () => {
-    const r = await request.get('/notifications/42').set('X-Account-Id', '10');
+    const r = await request.get('/probe/member/42').set('X-Account-Id', '10');
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ id: '42' });
   });
@@ -112,7 +113,7 @@ describe('shell: admin gate is case-insensitive and airtight (§3.1, §9.1)', ()
       expect((await rq.get(p).set('X-Account-Id', '1')).status, p).toBe(404);
     }
     for (let i = 0; i < 2; i++) {
-      expect((await rq.get('/notifications/1').set('X-Account-Id', '1')).status).toBe(200);
+      expect((await rq.get('/probe/member/1').set('X-Account-Id', '1')).status).toBe(200);
     }
     const r = await rq.get('/admin/secret').set('X-Account-Id', '1');
     expect(r.status).toBe(429);
@@ -122,7 +123,7 @@ describe('shell: admin gate is case-insensitive and airtight (§3.1, §9.1)', ()
 
 describe('shell: routing and error envelope through createApp', () => {
   it('wrong method on an existing path -> 404 NOT_FOUND envelope (no 405 in the contract)', async () => {
-    const r = await app().request.post('/notifications/1').set('X-Account-Id', '10');
+    const r = await app().request.post('/probe/member/1').set('X-Account-Id', '10');
     expect(r.status).toBe(404);
     expect(r.body).toEqual({ error: 'NOT_FOUND' });
     expect(r.headers.allow).toBeUndefined();
@@ -180,8 +181,8 @@ describe('shell: routing and error envelope through createApp', () => {
       error() {},
     };
     log.child = () => log;
-    await app({ log }).request.get('/notifications/77').set('X-Account-Id', '10');
+    await app({ log }).request.get('/probe/member/77').set('X-Account-Id', '10');
     const line = lines.find((l) => 'route' in l);
-    expect(line?.route).toBe('/notifications/:id');
+    expect(line?.route).toBe('/probe/member/:id');
   });
 });

@@ -10,23 +10,35 @@ import { createLogger } from './lib/logger.js';
 import { emfMetrics } from './lib/metrics.js';
 import { createQueue } from './queue/index.js';
 import { jobHandlers, onDead } from './jobs/index.js';
-import { startScheduler, timers } from './scheduler/index.js';
+import { startScheduler, timers, type Timer } from './scheduler/index.js';
+import type { JobHandlers } from './queue/queue.js';
 
 export interface WorkerOptions {
   /** Start the timer registry (default true). */
   scheduler?: boolean;
+  /** Handler map to consume with (default: the real registry jobHandlers(deps)). */
+  handlers?: JobHandlers;
+  /** Timer list to schedule (default: the real registry timers(deps)). */
+  timers?: Timer[];
+  /** Starts the scheduler (default: the real startScheduler; tests inject one). */
+  startScheduler?: (deps: Deps, list: Timer[]) => { stop(): Promise<void> };
 }
 
 /** Starts consuming and (optionally) the scheduler; stop() ends both, waiting for in-progress work. */
 export async function startWorker(deps: Deps, opts: WorkerOptions = {}): Promise<{ stop(): Promise<void> }> {
   // Build (and so validate) the timers first: an invalid cron rejects before any consumer or leader connection.
-  const list = opts.scheduler === false ? undefined : timers(deps);
-  const consumer = await deps.queue.consume(jobHandlers(deps), { onDead: onDead(deps) });
-  const scheduler = list && startScheduler(deps, list);
+  const list = opts.scheduler === false ? undefined : (opts.timers ?? timers(deps));
+  const consumer = await deps.queue.consume(opts.handlers ?? jobHandlers(deps), { onDead: onDead(deps) });
+  const scheduler = list && (opts.startScheduler ?? startScheduler)(deps, list);
   return {
+    // Both are always attempted, so a failing scheduler stop never leaves the consumer claiming; first error wins.
     stop: async () => {
-      await scheduler?.stop();
-      await consumer.stop();
+      const results = await Promise.allSettled([
+        scheduler ? scheduler.stop() : Promise.resolve(),
+        consumer.stop(),
+      ]);
+      const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failed) throw failed.reason;
     },
   };
 }
@@ -52,6 +64,45 @@ export async function stopWithDeadline(
   } finally {
     cancel();
   }
+}
+
+/** Returns a shutdown function that runs `stop` once under the deadline and then calls `exit`: `code` on a clean
+ * stop, 1 on a timeout or failure. Later calls return the first call's promise. */
+export function shutdownOnce(
+  stop: () => Promise<void>,
+  exit: (code: number) => void,
+  log: Deps['log'],
+  deadlineMs = STOP_DEADLINE_MS,
+): (code?: number) => Promise<void> {
+  let running: Promise<void> | undefined;
+  return (code = 0) =>
+    (running ??= (async () => {
+      log.info('worker shutting down');
+      try {
+        const result = await stopWithDeadline(stop, deadlineMs);
+        if (result === 'timeout') {
+          log.error({ deadlineMs }, 'worker stop deadline exceeded');
+          return exit(1);
+        }
+        exit(code);
+      } catch (err) {
+        log.error({ err }, 'worker shutdown failed');
+        exit(1);
+      }
+    })());
+}
+
+/** Listens on `port`; a server error (e.g. EADDRINUSE) goes to `onError` instead of crashing the process. */
+export function serveHealth(
+  server: http.Server,
+  port: number,
+  host: string | undefined,
+  onError: (err: NodeJS.ErrnoException) => void,
+): http.Server {
+  server.on('error', onError);
+  if (host) server.listen(port, host);
+  else server.listen(port);
+  return server;
 }
 
 /** /healthz: process alive. /readyz: ready and the writer answers a ping. */
@@ -88,27 +139,22 @@ async function main() {
   const worker = await startWorker(deps);
   let ready = true;
   const server = http.createServer(healthHandler(db, () => ready));
-  server.listen(config.workerHealthPort);
-  const shutdown = async () => {
-    ready = false;
-    log.info('worker shutting down');
-    server.close();
-    try {
-      const result = await stopWithDeadline(async () => {
-        await worker.stop();
-        await db.destroy();
-        await dbReader.destroy();
-      }, STOP_DEADLINE_MS);
-      if (result === 'timeout') {
-        log.error({ deadlineMs: STOP_DEADLINE_MS }, 'worker stop deadline exceeded');
-        process.exit(1);
-      }
-      process.exit(0);
-    } catch (err) {
-      log.error({ err }, 'worker shutdown failed');
-      process.exit(1);
-    }
-  };
+  const stopAll = shutdownOnce(
+    async () => {
+      ready = false;
+      server.close();
+      await worker.stop();
+      await db.destroy();
+      await dbReader.destroy();
+    },
+    (code) => process.exit(code),
+    log,
+  );
+  serveHealth(server, config.workerHealthPort, undefined, (err) => {
+    log.error({ err, port: config.workerHealthPort }, 'worker health server failed');
+    void stopAll(1);
+  });
+  const shutdown = () => void stopAll(0);
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
   log.info({ port: config.workerHealthPort }, 'worker started');

@@ -29,8 +29,20 @@ describe('api composition root', () => {
     const c = { ...loadConfig({ ...env, AUTH_IMPL: 'header' }), production: true };
     expect(() => selectAuth(c)).toThrow(/production/);
   });
-  it('queue selection is not wired yet and fails clearly', async () => {
+  it('QUEUE_IMPL: unknown impl fails fast; db stand-in is refused in production', async () => {
     const { selectQueue } = await import('../../src/api.js');
-    expect(() => selectQueue(loadConfig(env))).toThrow(/queue implementation not wired/);
+    const { createLogger } = await import('../../src/lib/logger.js');
+    const { systemClock } = await import('../../src/lib/clock.js');
+    const { RecordingMetrics } = await import('../helpers/deps.js');
+    const parts = {
+      db: {} as never,
+      clock: systemClock,
+      log: createLogger('silent'),
+      metrics: new RecordingMetrics(),
+    };
+    expect(() => selectQueue(loadConfig({ ...env, QUEUE_IMPL: 'sqs' }), parts)).toThrow(/QUEUE_IMPL=sqs/);
+    expect(() => loadConfig({ ...env, NODE_ENV: 'production', QUEUE_IMPL: 'db' })).toThrow(/refused/);
+    const prod = { ...loadConfig({ ...env, QUEUE_IMPL: 'db' }), production: true };
+    expect(() => selectQueue(prod, parts)).toThrow(/QUEUE_IMPL=db \(stand-in\) is refused in production/);
   });
 });

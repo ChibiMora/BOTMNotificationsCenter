@@ -1,4 +1,5 @@
-// Worker composition root (§6, §8): stub registries start/stop cleanly; stub jobs end dead, never dropped.
+// Worker composition root (§6, §8): registries are complete; failing jobs end dead, never dropped. Independent of
+// what the registry's handlers and timers do (later units replace them): behaviour tests inject their own.
 import http from 'node:http';
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { testConfig, testDb, resetDb } from '../helpers/db.js';
@@ -7,6 +8,8 @@ import { FixedClock } from '../helpers/clock.js';
 import { createLogger } from '../../src/lib/logger.js';
 import { DbQueue } from '../../src/queue/dbQueue.js';
 import { jobHandlers } from '../../src/jobs/index.js';
+import { timers } from '../../src/scheduler/index.js';
+import type { JobHandlers } from '../../src/queue/queue.js';
 
 const db = testDb();
 beforeEach(() => resetDb(db));
@@ -21,25 +24,56 @@ describe('worker', () => {
     spy.mockRestore();
   });
 
-  it('the registry lists all five job types', () => {
+  it('the default registries are complete: five job handlers, four timers with valid schedules', () => {
     const deps = makeTestDeps({ db });
-    expect(Object.keys(jobHandlers(deps)).sort()).toEqual([
+    const h = jobHandlers(deps);
+    expect(Object.keys(h).sort()).toEqual([
       'account_recheck',
       'cancel_scheduled',
       'event_delivery',
       'fanout_filter',
       'process_import',
     ]);
+    for (const fn of Object.values(h)) expect(typeof fn).toBe('function');
+    const list = timers(deps);
+    expect(list.map((t) => [t.name, t.leaderOnly]).sort()).toEqual([
+      ['due_send', false],
+      ['expiry', true],
+      ['housekeeping', true],
+      ['rescan', true],
+    ]);
+    for (const t of list) {
+      expect(typeof t.run).toBe('function');
+      expect(typeof t.schedule.isDue(new Date('2026-10-04T00:00:00Z'), undefined)).toBe('boolean');
+    }
   });
 
-  it('startWorker starts and stops cleanly; a stub-handler job ends dead after max attempts', async () => {
+  it('startWorker uses an injected timer list instead of the default registry', async () => {
+    const base = makeTestDeps({ db });
+    const deps = { ...base, config: { ...base.config, housekeepingCron: '1-5/x * * * *' } };
+    const { startWorker } = await import('../../src/worker.js');
+    const w = await startWorker(deps, { timers: [] });
+    await w.stop();
+  });
+
+  it('startWorker starts and stops cleanly; a job whose handler always throws ends dead after max attempts', async () => {
     const config = { ...testConfig(), queueImpl: 'db' } as ReturnType<typeof testConfig>;
     const clock = new FixedClock();
     const metrics = new RecordingMetrics();
     const queue = new DbQueue(config, { db, clock, log: createLogger('silent'), metrics, manual: true });
     const deps = makeTestDeps({ db, config, clock, queue, metrics });
     const { startWorker } = await import('../../src/worker.js');
-    const w = await startWorker(deps, { scheduler: false });
+    const fail = async () => {
+      throw new Error('injected handler failure');
+    };
+    const handlers: JobHandlers = {
+      event_delivery: fail,
+      fanout_filter: fail,
+      process_import: fail,
+      cancel_scheduled: fail,
+      account_recheck: fail,
+    };
+    const w = await startWorker(deps, { scheduler: false, handlers });
     await queue.enqueue('event_delivery', {
       type: 'shipped',
       accountId: 1,
@@ -52,7 +86,7 @@ describe('worker', () => {
     }
     const row = await db('jobs').first('status', 'attempts', 'last_error');
     expect(row).toMatchObject({ status: 'dead', attempts: config.jobMaxAttempts });
-    expect(row.last_error).toMatch(/event_delivery handler not implemented/);
+    expect(row.last_error).toMatch(/injected handler failure/);
     expect(metrics.calls.filter((c) => c.name === 'job_dead')).toHaveLength(1);
     await w.stop();
   });
