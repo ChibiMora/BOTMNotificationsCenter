@@ -12,8 +12,8 @@
     "lint": "eslint .",
     "test": "npm run typecheck && npm run test:unit && npm run test:integration && npm run test:contract",
     "test:unit": "vitest run --project unit",
-    "test:integration": "vitest run --project integration",
-    "test:contract": "vitest run --project contract --passWithNoTests",
+    "test:integration": "vitest run --project integration --no-file-parallelism",
+    "test:contract": "vitest run --project contract --no-file-parallelism --passWithNoTests",
     "seed": "tsx scripts/seed.ts",
     "db": "tsx scripts/db.ts"
   },
