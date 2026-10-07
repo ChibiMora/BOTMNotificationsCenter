@@ -118,12 +118,18 @@ describe('listQuerySchema and idParamSchema', () => {
 
 describe('plainText: separators, override-range ends, ill-formed strings, astral length', () => {
   const s = plainText('headline');
-  it.each([['x y'], ['x y'], ['a‪b'], ['a‮b'], ['a⁦b'], ['a⁩b'], ['\ud800x'], ['x\udc00']])(
-    'rejects %j',
-    (v) => {
-      expect(s.safeParse(v).success).toBe(false);
-    },
-  );
+  it.each([
+    ['x\u2028y'],
+    ['x\u2029y'],
+    ['a\u202ab'],
+    ['a\u202eb'],
+    ['a\u2066b'],
+    ['a\u2069b'],
+    ['\ud800x'],
+    ['x\udc00'],
+  ])('rejects %j', (v) => {
+    expect(s.safeParse(v).success).toBe(false);
+  });
   it.each([['a‧b'], ['a b'], ['a⁥b'], ['a⁪b']])(
     'accepts %j (just outside the rejected ranges, not a control character)',
     (v) => {
