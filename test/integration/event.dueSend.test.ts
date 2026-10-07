@@ -1,7 +1,7 @@
 // Due-send timer (§7.4, §8.3 Due-send row; B10): releases due scheduled rows, every worker, batch per transaction.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { testDb, resetDb, testConfig } from '../helpers/db.js';
-import { ownLocks, recordLocks } from '../helpers/locks.js';
+import { lockWaits, ownLocks, recordLocks } from '../helpers/locks.js';
 import { makeTestDeps, RecordingMetrics } from '../helpers/deps.js';
 import { makeNotification } from '../helpers/factories.js';
 import { insertDeliveries } from '../../src/lib/insertDeliveries.js';
@@ -37,6 +37,76 @@ async function seed(due: number, later = 0) {
   await insertDeliveries(db, rows, { now: new Date('2026-10-03T00:00:00Z') });
   return n;
 }
+
+type RunDeps = ReturnType<typeof depsWith>;
+type RunResult = { label: string; deps: RunDeps; ms: number; error?: unknown };
+const errText = (e: unknown) => {
+  const x = e as { message?: unknown; code?: unknown; errno?: unknown; sqlMessage?: unknown };
+  return `${String(x?.message ?? e)}${x?.code ? ` [code=${String(x.code)}]` : ''}${x?.errno ? ` [errno=${String(x.errno)}]` : ''}`;
+};
+const durations = (runs: RunResult[]) => runs.map((r) => `${r.label}=${r.ms}ms`).join(', ');
+
+/**
+ * Runs the due-send timer once per deps, concurrently. Waits for every run to settle; if any rejected, throws one
+ * error naming each failed run (message/code) and every run's duration. Warns (passing or not) when slow under load.
+ */
+async function runConcurrently(testName: string, runs: Array<[string, RunDeps]>): Promise<RunResult[]> {
+  const t0 = performance.now();
+  const results = await Promise.all(
+    runs.map(async ([label, deps]): Promise<RunResult> => {
+      const s = performance.now();
+      try {
+        await dueSendTimer(deps).run(deps);
+        return { label, deps, ms: Math.round(performance.now() - s) };
+      } catch (error) {
+        return { label, deps, ms: Math.round(performance.now() - s), error };
+      }
+    }),
+  );
+  const wall = Math.round(performance.now() - t0);
+  if (wall > 10_000)
+    console.warn(`[slow] ${testName}: concurrent due-send runs took ${wall}ms (${durations(results)})`);
+  const failed = results.filter((r) => 'error' in r);
+  if (failed.length > 0)
+    throw new Error(
+      `${testName}: due-send run(s) rejected: ${failed.map((r) => `${r.label} after ${r.ms}ms: ${errText(r.error)}`).join('; ')} | durations: ${durations(results)}`,
+      { cause: failed[0]!.error },
+    );
+  return results;
+}
+
+/** Failure-only dump: pending rows, every due_send_* metric call per run in order, durations, this db's locks. */
+async function dueSendDump(runs: RunResult[]): Promise<string> {
+  const rows = await db('notification_deliveries')
+    .whereNull('sent_at')
+    .select('id', 'due_at', 'sent_at')
+    .orderBy('id');
+  const metrics = runs.map(
+    (r) =>
+      `  ${r.label} (${r.ms}ms): ` +
+      (r.deps.metrics as RecordingMetrics).calls
+        .filter((c) => c.name.startsWith('due_send_'))
+        .map((c) => `${c.kind}:${c.name}=${c.value}`)
+        .join(', '),
+  );
+  let locks: string;
+  try {
+    locks = `lock waits=${await lockWaits(db)}; locks=${JSON.stringify(await ownLocks(db))}`;
+  } catch (e) {
+    locks = `lock probe failed: ${errText(e)}`;
+  }
+  return [
+    `pending rows (${rows.length}): ${JSON.stringify(rows.map((r) => ({ id: r.id, due_at: r.due_at, sent_at: r.sent_at })))}`,
+    'due_send_* metric calls per run, in call order:',
+    ...metrics,
+    `durations: ${durations(runs)}`,
+    locks,
+  ].join('\n');
+}
+const released = (d: RunDeps) =>
+  (d.metrics as RecordingMetrics).calls
+    .filter((c) => c.name === 'due_send_released')
+    .reduce((s, c) => s + c.value, 0);
 
 describe('due-send', () => {
   it('delayed event: invisible until due, then live with sent_at = release time (not due_at)', async () => {
@@ -98,21 +168,27 @@ describe('due-send', () => {
         .reduce((s, c) => s + c.value, 0);
     expect(total(a) + total(b)).toBe(23);
     expect(total(b)).toBe(18);
-    await Promise.all([dueSendTimer(a).run(a), dueSendTimer(b).run(b)]);
-    expect(total(a) + total(b)).toBe(23);
+    const runs = await runConcurrently('overlapping runs (rerun)', [
+      ['A', a],
+      ['B', b],
+    ]);
+    const sum = total(a) + total(b);
+    expect(sum, sum !== 23 ? await dueSendDump(runs) : undefined).toBe(23);
   });
 
   it('concurrent runs on a large backlog never release a row twice', async () => {
     const a = depsWith(7);
     const b = depsWith(7);
     await seed(60);
-    await Promise.all([dueSendTimer(a).run(a), dueSendTimer(b).run(b)]);
-    expect(await pending()).toBe(0);
-    const total = [a, b]
-      .flatMap((d) => (d.metrics as RecordingMetrics).calls)
-      .filter((c) => c.name === 'due_send_released')
-      .reduce((s, c) => s + c.value, 0);
-    expect(total).toBe(60);
+    const runs = await runConcurrently('large backlog', [
+      ['A', a],
+      ['B', b],
+    ]);
+    const left = await pending();
+    const total = released(a) + released(b);
+    const dump = left !== 0 || total !== 60 ? `\n${await dueSendDump(runs)}` : '';
+    expect(left, `pending after both runs (released total=${total})${dump}`).toBe(0);
+    expect(total, `summed due_send_released (pending=${left})${dump}`).toBe(60);
   });
 
   it('lock footprint: delivery locks proportional to the batch; no EXCLUSIVE lock on notifications', async () => {
