@@ -4,14 +4,13 @@
  * Idempotency: the request hash is computed as soon as the parts are parsed and normalised, and the key is looked up in
  * `imports` before any other validation, so a genuine replay returns the original 202 even after its liveDate has
  * passed or the CSV caps have changed. Same-endpoint races are covered by the unique index on imports.request_key (the
- * duplicate-key fallback below). The cross-endpoint checks (notifications / import_runs) are plain reads before the
- * insert: two concurrent requests using one key on two DIFFERENT endpoints can both succeed, because there is no
- * cross-table unique constraint.
+ * duplicate-key fallback below). A key is scoped to `imports`: the same key used by a notification create or an
+ * import run is a different request and is not consulted.
  */
 import type Koa from 'koa';
 import multer from '@koa/multer';
 import type { Deps } from '../lib/deps.js';
-import { differentRequest, isDuplicateKey, keyUsedElsewhere, sha256Hex } from './idempotency.js';
+import { differentRequest, isDuplicateKey, sha256Hex } from './idempotency.js';
 import { enqueueAfterCommit } from './enqueueAfterCommit.js';
 import { validationError } from '../lib/errors.js';
 import { formatTimestamp, parseRequestTimestamp, truncateToSecond } from '../lib/time.js';
@@ -81,7 +80,6 @@ export async function createImport(deps: Deps, ctx: Koa.Context) {
   });
   const hash = sha256Hex(normalised, '\n', file);
   if (await replied(deps, ctx, key, hash)) return;
-  if (await keyUsedElsewhere(deps, key, 'imports')) throw differentRequest();
 
   // A new key: only now validate against the current clock and caps.
   const now = truncateToSecond(deps.clock.now());

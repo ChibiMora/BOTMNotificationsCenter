@@ -109,7 +109,7 @@ describe('POST /admin/notifications/imports/:id/runs', () => {
     expect(q(t).enqueued).toHaveLength(0);
   });
 
-  it('400 when the key was used on another import, by an upload, or by a notification create', async () => {
+  it('400 when the key was used on another import; a key used by an upload or a notification create is a new run', async () => {
     const t = testApp({ db });
     const a = await failedImport(t);
     const b = await failedImport(t);
@@ -118,13 +118,16 @@ describe('POST /admin/notifications/imports/:id/runs', () => {
     const other = await post(t, b.id, key);
     expect(other.status).toBe(400);
     expect(other.body).toEqual({ error: 'VALIDATION_ERROR', message: DIFFERENT });
+    expect(await runCount(b.id)).toBe(1);
     const uploadKey = randomUUID();
     await upload(t, uploadKey);
-    expect((await post(t, b.id, uploadKey)).body.message).toBe(DIFFERENT);
+    expect((await post(t, b.id, uploadKey)).status).toBe(202);
+    expect(await runCount(b.id)).toBe(2);
+    const c = await failedImport(t);
     const nKey = randomUUID();
     await db('notifications').where({ id: a.notificationId }).update({ request_key: nKey });
-    expect((await post(t, b.id, nKey)).body.message).toBe(DIFFERENT);
-    expect(await runCount(b.id)).toBe(1);
+    expect((await post(t, c.id, nKey)).status).toBe(202);
+    expect(await runCount(c.id)).toBe(2);
   });
 
   it('two concurrent requests with different keys: exactly one run is created, the other gets 409', async () => {

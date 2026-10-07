@@ -2,13 +2,15 @@
 import type Koa from 'koa';
 import type { Deps } from '../lib/deps.js';
 import type { NotificationTypeName } from '../lib/rows.js';
-import { differentRequest, isDuplicateKey, keyUsedElsewhere, requestHash } from './idempotency.js';
+import { differentRequest, isDuplicateKey, requestHash } from './idempotency.js';
 import { truncateToSecond } from '../lib/time.js';
 import { loadNotification, type NamedNotificationRow } from './presenter.js';
 
 /**
  * Inserts a notification under the request's Idempotency-Key. A replay of the same request returns the existing
- * row (`created: false`); the same key with a different request is a 400.
+ * row (`created: false`); the same key with a different request, or already used by the other notification create
+ * (filter vs event share this table, told apart by request_endpoint), is a 400. Keys used in `imports` or
+ * `import_runs` are not consulted: a key is scoped to its table.
  *
  * `normalised` is the request as it will be stored (defaults applied, empty arrays dropped, arrays de-duplicated
  * and sorted, text trimmed); it is what is hashed, so requests that store the same row are the same request.
@@ -29,7 +31,6 @@ export async function insertIdempotent(
   const hash = requestHash(normalised);
   const now = truncateToSecond(deps.clock.now());
   const typeRow = await deps.db('notification_types').where({ name: type }).first('id');
-  if (await keyUsedElsewhere(deps, key, 'notifications')) throw differentRequest();
   try {
     const [id] = await deps.db('notifications').insert({
       ...columns,

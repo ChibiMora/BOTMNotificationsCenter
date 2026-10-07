@@ -1,6 +1,8 @@
-/** Idempotency-Key checks shared by every admin create (§9.4): one message, one duplicate test, one cross-endpoint lookup. */
+/**
+ * Idempotency-Key checks shared by every admin create (§9.4): one message, one duplicate test. A key identifies a
+ * request within one table's request_key column; the same key in another table is a different request.
+ */
 import { createHash } from 'node:crypto';
-import type { Deps } from '../lib/deps.js';
 import { validationError } from '../lib/errors.js';
 import { canonicalJson } from '../lib/canonicalJson.js';
 
@@ -12,7 +14,7 @@ const UNIQUE_INDEX: Record<KeyTable, string> = {
   import_runs: 'uq_import_runs_request_key',
 };
 
-/** The 400 for a key reused with a different request (or on a different endpoint). */
+/** The 400 for a key reused in the same table with a different request (or by the other endpoint sharing it). */
 export const differentRequest = () => validationError('Idempotency-Key already used for a different request');
 
 /** True for a MySQL duplicate (`ER_DUP_ENTRY`) on `table`'s request_key unique index; any other duplicate is not. */
@@ -21,13 +23,6 @@ export function isDuplicateKey(err: unknown, table: KeyTable): boolean {
   return (
     e?.code === 'ER_DUP_ENTRY' && `${e.message ?? ''} ${e.sqlMessage ?? ''}`.includes(UNIQUE_INDEX[table])
   );
-}
-
-/** True when the key was already used in any request_key table other than `own`. */
-export async function keyUsedElsewhere(deps: Deps, key: string, own: KeyTable): Promise<boolean> {
-  const others = (Object.keys(UNIQUE_INDEX) as KeyTable[]).filter((t) => t !== own);
-  const hits = await Promise.all(others.map((t) => deps.db(t).where({ request_key: key }).first('id')));
-  return hits.some(Boolean);
 }
 
 /** sha256 hex of the concatenated parts (the stored request_hash). */

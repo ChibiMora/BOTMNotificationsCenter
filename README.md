@@ -91,6 +91,8 @@ curl -s -X POST localhost:3000/admin/notifications/filter \
      "activatedAt":"2026-10-06T10:18:03Z","filters":{"policy":["monthly"],"country":["US"]}, ...}
 ```
 
+Repeating the same request with the same `Idempotency-Key` replays the original response; keys are scoped per endpoint (filter and event creates share one scope), so the same key on an import upload or import run is a separate request, while the same key with a different body, or on the other of filter/event, is a 400.
+
 A few seconds later (the worker does the fan-out), list as a matching member:
 
 ```sh
@@ -182,7 +184,7 @@ Contracts, schema, flows and jobs are in [`docs/tech-design.html`](docs/tech-des
 Items to raise in a real code review or revisit. Numbers refer to entries in [`docs/build-issues.md`](docs/build-issues.md); most entries need either a tech-design change or a confirmation.
 
 - **Decided (63): deactivation versus an in-flight release.** Due-send locks delivery rows only, not the notification row. An admin deactivate therefore always succeeds, but one batch already being released (up to `DUE_SEND_BATCH`, default 1000 rows) can still go live just after it, with a `sent_at` earlier than the deactivation; remove still hides them at once. The strict alternative is to lock the notification row, which costs 409s on admin updates while a release runs. Decided: the window is accepted; admin updates must not fail.
-- **Idempotency keys live in three tables (77)** (`notifications`, `imports`, `import_runs`) with no constraint across them; "same key, different endpoint is a 400" is enforced by application reads, not by the database.
+- **Idempotency keys are scoped per endpoint (77).** A key identifies a request within one create endpoint's table (filter and event share one); the same key on an import upload or run is a separate request. The earlier cross-endpoint 400 was enforced by racy application reads and was dropped on the owner's decision.
 - **Shared locks on account rows during due-send (65).** Setting `sent_at` changes an index that contains the account id, so MySQL re-checks the foreign key and holds shared locks on the batch's account rows until commit; writes to those accounts wait. Removing it needs a schema change.
 - **Dropped events have metrics but no alarm (69).** Events dropped without a retry (invalid payload, unknown account, older than the window) are logged and counted, never reach the dead-job alarm, and no alarm is defined for them.
 - **An event can be lost between commit and enqueue** (tech design §13.3). The trigger enqueues after the business write commits and swallows failures, so a crash or queue outage in that gap loses that occurrence; it is counted, not recovered.

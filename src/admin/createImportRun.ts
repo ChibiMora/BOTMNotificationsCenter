@@ -1,13 +1,12 @@
 /**
  * POST /admin/notifications/imports/:id/runs (§3.4, §7.3): starts a new run of an import whose latest run failed.
  *
- * Idempotency: same-endpoint races are covered by the unique index on import_runs.request_key. The cross-endpoint key
- * checks (notifications / imports) are plain reads before the insert, so two concurrent requests using one key on two
- * DIFFERENT endpoints can both succeed: there is no cross-table unique constraint.
+ * Idempotency: same-endpoint races are covered by the unique index on import_runs.request_key. A key is scoped to
+ * `import_runs`: the same key used by an upload or a notification create is a different request and is not consulted.
  */
 import type Koa from 'koa';
 import type { Deps } from '../lib/deps.js';
-import { differentRequest, isDuplicateKey, keyUsedElsewhere } from './idempotency.js';
+import { differentRequest, isDuplicateKey } from './idempotency.js';
 import { enqueueAfterCommit } from './enqueueAfterCommit.js';
 import { AppError, notFound } from '../lib/errors.js';
 import { truncateToSecond } from '../lib/time.js';
@@ -31,7 +30,6 @@ export async function createImportRun(deps: Deps, ctx: Koa.Context) {
   const importId = idParamSchema.parse(ctx.params.id);
   const key = ctx.state.idempotencyKey as string;
   if (await replay(deps, ctx, importId, key)) return;
-  if (await keyUsedElsewhere(deps, key, 'import_runs')) throw differentRequest();
 
   const imp = await deps.db('imports').where({ id: importId }).first('id', 'notification_id');
   if (!imp) throw notFound('import');

@@ -82,7 +82,7 @@ describe('POST /admin/notifications/imports', () => {
     expect((t.deps.queue as FakeQueue).enqueued).toHaveLength(1);
   });
 
-  it('400 when the key was used with a different body, or by a filter create', async () => {
+  it('400 when the key was used with a different body; a key used by a filter create is a new upload', async () => {
     const t = testApp({ db });
     const key = randomUUID();
     await post(t, valid(), key);
@@ -100,8 +100,14 @@ describe('POST /admin/notifications/imports', () => {
       .send({ ...content, isActive: false });
     expect(f.status).toBe(201);
     const before2 = await counts();
-    expect((await post(t, valid(), key2)).status).toBe(400);
-    expect(await counts()).toEqual(before2);
+    const up = await post(t, valid(), key2);
+    expect(up.status).toBe(202);
+    expect(await db('imports').where({ id: up.body.id }).first('request_key')).toEqual({ request_key: key2 });
+    expect(await counts()).toMatchObject({
+      notifications: before2.notifications! + 1,
+      imports: before2.imports! + 1,
+      import_runs: before2.import_runs! + 1,
+    });
   });
 
   const small = { ...testConfig(), csvMaxRows: 2, csvMaxBytes: 40 };
