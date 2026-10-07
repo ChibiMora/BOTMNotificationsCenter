@@ -22,7 +22,8 @@ Three stand-ins replace systems this service does not own, so it runs end to end
 | [`docs/design-draft.md`](docs/design-draft.md)   | Original design draft that the review started from. Kept as-is for history.                                                                                                                                                                                                              |
 | [`docs/architecture.md`](docs/architecture.md)   | Reviewed architecture: requirements (R#), decisions and assumptions (A#), API contracts, data model. Historical record of the design-review phase.                                                                                                                                       |
 | [`docs/tech-design.html`](docs/tech-design.html) | Standalone technical design. Open it in a browser: behaviour rules, full API contracts, schema, module layout, core-flow and lifecycle diagrams, background jobs, testing strategy, implementation units, and the decision register. This is the document the implementation works from. |
-| [`docs/build-issues.md`](docs/build-issues.md)   | Every place the build found the design silent, ambiguous or wrong, the choice made for each, and what is needed to close it.                                                                                                                                                             |
+| [`docs/build-issues.md`](docs/build-issues.md)   | Every place the build found the design silent, ambiguous or wrong, the choice made for each, and my decision on it (111 entries).                                                                                                                                                        |
+| [`docs/code-audit.html`](docs/code-audit.html)   | Post-build audit of the code and of the tests (do the assertions encode the spec and the design, or something looser?), with my decisions.                                                                                                                                              |
 | [`docs/metrics.md`](docs/metrics.md)             | Every metric the service emits and the alarms it serves.                                                                                                                                                                                                                                 |
 
 Reading order:
@@ -170,54 +171,106 @@ business code --> NotificationTrigger (in-process; only enqueues)
 
 Contracts, schema, flows and jobs are in [`docs/tech-design.html`](docs/tech-design.html).
 
-## Architecture decisions and tradeoffs
-
-- **Fan-out on write, one row per delivery.** Every recipient gets their own row, which makes member reads cheap and gives per-delivery clicked state and the once-per-month rule. Cost: a whole-base filter writes one row per member (pages of `FANOUT_BATCH_SIZE`), a burst of write load per campaign.
-- **One idempotent insert path with a dedupe key.** Fan-out, rescans, events and imports all insert through the same function; a unique dedupe key per delivery makes retried and duplicate jobs harmless. Cost: every source must encode its identity into that key correctly.
-- **Scheduled sends are rows, not delayed queue jobs.** Future deliveries are written unsent and released by due-send, so they are visible and cancellable in SQL and do not depend on the queue's delay feature. Cost: a polling job and up to one interval of latency.
-- **Cancellation is enforced at release.** Deactivate records a cutoff; due-send releases only rows of an active notification created after it, and a cleanup job deletes the rest. Cost: the release statement carries the rule, with a residual window (see Concerns).
-- **Queue behind an interface, with a temporary database stand-in.** Nothing outside `src/queue` knows which queue runs. Cost: the `jobs` table is a throughput ceiling, not built to scale, and must be replaced by the company queue.
-- **No response caching.** Member reads hit indexed rows directly, so nothing needs invalidating on deactivate, remove or click. Cost: every read is a database query.
-
-## Concerns
-
-Items to raise in a real code review or revisit. Numbers refer to entries in [`docs/build-issues.md`](docs/build-issues.md); most entries need either a tech-design change or a confirmation.
-
-- **Decided (63): deactivation versus an in-flight release.** Due-send locks delivery rows only, not the notification row. An admin deactivate therefore always succeeds, but one batch already being released (up to `DUE_SEND_BATCH`, default 1000 rows) can still go live just after it, with a `sent_at` earlier than the deactivation; remove still hides them at once. The strict alternative is to lock the notification row, which costs 409s on admin updates while a release runs. Decided: the window is accepted; admin updates must not fail.
-- **Idempotency keys are scoped per endpoint (77).** A key identifies a request within one create endpoint's table (filter and event share one); the same key on an import upload or run is a separate request. The earlier cross-endpoint 400 was enforced by racy application reads and was dropped on the owner's decision.
-- **Shared locks on account rows during due-send (65).** Setting `sent_at` changes an index that contains the account id, so MySQL re-checks the foreign key and holds shared locks on the batch's account rows until commit; writes to those accounts wait. Removing it needs a schema change.
-- **Dropped events have metrics but no alarm (69).** Events dropped without a retry (invalid payload, unknown account, older than the window) are logged and counted, never reach the dead-job alarm, and no alarm is defined for them.
-- **An event can be lost between commit and enqueue** (tech design §13.3). The trigger enqueues after the business write commits and swallows failures, so a crash or queue outage in that gap loses that occurrence; it is counted, not recovered.
-- **Query plans not verified at volume (45, 59).** The cursor comparison may not range-seek in MySQL, and expiry ordering needed a workaround because no index serves `(sent_at, id)`. Neither can be judged on test-sized data.
-- **Import reports are uncapped** (§13.9): every rejected id is returned.
-
-## Assumptions
-
-Where the spec was ambiguous, the design (or, where it was silent, the build) decided:
-
-- "The last 2 months" means the current and previous calendar month, in UTC.
-- A filter notification reaches a member at most once per calendar month, and again in a later month if they still match.
-- Refer-a-friend is an `enrolled` event, with the referring member as the recipient.
-- A pre-ordered audiobook is the event at publication, delivered immediately.
-- CSV import: ids not in `accounts` are skipped and listed in the import report; a malformed file is rejected as a whole.
-- The credits filter is one inclusive range (`minimum`, `maximum`, each optional).
-- `isActive` must be stated explicitly when creating filter and event notifications.
-- Remove is permanent: a removed notification cannot be changed again (409) and leaves members' lists at once.
-- The real `accounts` table, session and role system, and queue have the shapes in tech design §1.4, each isolated behind one adapter.
-
-## What's missing for true production readiness
-
-- Real adapters for the session and role system (`AuthProvider`) and the company job queue (`Queue`); production configuration refuses to start without them.
-- The real `accounts` table, with its shape and stored values confirmed against the stand-in.
-- An outbox for trigger events, so an event cannot be lost between the business commit and the enqueue.
-- Alarms and dashboards wired to the metrics in `docs/metrics.md`.
-- Load testing of fan-out, due-send and expiry at real volumes, including the index questions in build-issues 45 and 59.
-- Secrets management and deployment wiring (environments, separate API and worker services, `node dist/scripts/db.js migrate <DB_NAME>` as a release step).
-- Rate limiting shared across instances; limits are currently enforced per API instance.
-- Decisions on the open entries in `docs/build-issues.md`, starting with entry 63.
 
 ## Workflow
 
-The repository was produced in stages: a product spec (`docs/spec.md`), an architecture review (`docs/architecture.md`), a standalone technical design (`docs/tech-design.html`), then implementation in eleven units (U0–U10) by AI coding agents. Each unit was built tests-first from a written brief that quoted the design, then reviewed by two independent passes, a code review and a separate design-conformance audit, with fix rounds until both accepted it. Every place the design was silent, ambiguous or wrong was recorded in `docs/build-issues.md` with the choice made.
+I worked in three phases, each ending in a document that the next phase treated as its input: a reviewed architecture (`docs/architecture.md`), a standalone technical design (`docs/tech-design.html`), and the code with its issue ledger (`docs/build-issues.md`, `docs/code-audit.html`). The rule throughout was that AI generates, reviews and explains; I decide.
 
-> TODO (author): this section must be in your own words. Points only you can write: how you broke the problem down and why in that order; what you delegated to AI and what you kept; where you pushed back on its output (for example the decisions recorded in docs/build-issues.md that you changed or confirmed); what you did by hand; what you would do differently with more time.
+### How I approached it
+
+1. **Rewrote the requirements in my own words** before anything else. This surfaced parts of the spec I had misread on the first pass.
+2. **Designed by hand, data first.** I drew the tables, then worked through the API endpoints without AI. Writing the endpoints exposed columns the tables were missing and the background jobs the system would need (scheduled sends, monthly resends, expiry).
+3. **Had AI audit my draft against the spec.** I fed the draft and the spec to Claude as separate documents and asked it to check coverage line by line, question my assumptions, lay out alternatives with tradeoffs, and tell me what I had missed. It produced 38 findings; I answered every one individually, accepting, rejecting, or substituting my own design. The decisions are the A# register in `docs/architecture.md`.
+4. **Had AI write the tech design from the settled architecture**, as an HTML document with diagrams so the flows were easier to follow than prose, and iterated on it until I understood exactly how it intended to implement each piece. I then had four independent AI reviewers read the spec and the tech design cold (coverage, security, scale, consistency); they returned 61 items and 17 spec deviations, and I ruled on each. I did a final pass by hand for inconsistencies before freezing it.
+5. **Had AI build the code from the frozen design**, split into eleven units (U0–U10). Each unit was built by a fresh agent from a self-contained brief: tests first, with the failing-test output shown before implementation; never modify a test to make it pass; never change a contract; when the design is ambiguous, pick the reading most consistent with the rest of it and record the choice instead of stopping. Each unit then had to pass two independent read-only reviews, a code review and a separate design-conformance audit, before it merged to `main`. I ran this overnight.
+6. **Audited the output.** I read the open questions the build raised (all 111 in `docs/build-issues.md`) and decided each. I then ran two audits with no history of the build: one over the code alone, with `docs/` deliberately withheld, judging internal consistency, failure behaviour and cost rather than spec conformance; and one over the tests, reading assertion bodies rather than names against the spec and the tech design, since neither the builders nor the reviewers had read the spec directly. Both are in `docs/code-audit.html` with my decision on each finding. I ran the test suite myself and read the tests.
+
+### What I delegated to AI
+
+- Gap analysis of my design against the spec, and explaining concepts I asked about.
+- Generating alternatives and weighing scale, performance and security tradeoffs so I could choose between them.
+- Writing the architecture and tech-design documents from my decisions, and propagating each decision consistently through contracts, schema, flows, tests and diagrams.
+- All implementation code, all code review passes, and maintaining the issue ledgers.
+
+### What I did by hand
+
+- The initial design: tables, endpoints, request and response shapes, error cases.
+- Every decision at all three levels. When the AI suggested something I did not already understand, I had it explain, and where I was still unsure I looked up the pattern myself before accepting or proposing an alternative.
+- The AI build process and prompts.
+- Running the tests and reading them; reading the final code and SQL schemas against the requirements.
+
+### Where I pushed back
+
+A few representative cases; the full set is in the decision registers.
+
+- **Member API keying.** The AI proposed exposing the notification id and bolting on an ownership check. I countered with keying the member endpoints on the delivery row's own opaque id, so ownership is part of the lookup rather than a check beside it.
+- **REST hygiene.** The design carried verb endpoints (`/clicked`, `/retry`). I asked for resources only: click became `PATCH` on the delivery, re-running an import became a `runs` resource, and I had the remaining method inconsistencies listed and fixed.
+- **Publication date.** The audit raised "pre-order with no publication date yet." I asked why a job would ever need the date if the publication itself is the event. That removed a whole scheduling mechanism from the design.
+- **"At any point" eligibility.** The AI proposed a more frequent rescan; I asked whether that actually met the requirement and whether account-change hooks were better. When pressed it said both; I decided to do both: hooks for immediacy, the daily rescan as the safety net.
+- **Idempotency keys.** The build enforced a cross-endpoint rule with racy reads across three tables and proposed a new shared table to fix it. I asked what the check actually bought and scoped keys per endpoint instead, which removed the race by removing the rule. The code got smaller.
+- **Scheduler catch-up.** The design had recorded "no catch-up" as accepted. The audit showed a missed expiry run would wait a day after a deploy. I reversed the decision but capped it: one catch-up per timer for the most recent missed run, so a worker down for a week runs one expiry, not seven.
+- **Invented limits.** The AI added a 1,000-entry cap to import error reports and a content cache. I asked why each existed; neither had a reason, and both were removed.
+- **Things I declined for sake of time.** The admin audit trail and `/admin` network hardening (the host codebase's responsibility), hardening the temporary queue stand-in, and a fix for corrupt filters that the API already prevents.
+
+
+### With more time
+
+I would spend it reading the final code and tests more thoroughly myself. The audits were useful, but I relied on them more than I would want to for code going to production.
+
+## Architecture decisions and tradeoffs
+
+- **Fan-out on write, one row per delivery.** Every recipient gets their own row, which makes member reads cheap and gives per-delivery clicked state and the once-per-month rule. Cost: a whole-base filter writes one row per member (pages of `FANOUT_BATCH_SIZE`), a burst of write load per campaign.
+- **Filter eligibility: hooks plus a daily rescan.** A member who qualifies days after a filter notification goes live is caught either by the account-change hook or by the rescan. I chose both rather than instrumenting every code path that can change an account: a delay is better than a missed member, and the rescan keeps correctness in one place.
+- **Scheduled sends are rows, not delayed queue jobs.** Future deliveries are written unsent and released by due-send, so they are visible and cancellable in SQL and do not depend on the queue's delay feature. Cost: a polling job and up to one interval of latency.
+- **Cancellation is enforced at release.** Deactivate records a cutoff; due-send releases only rows of an active notification created after it, and a cleanup job deletes the rest. Cost: the release statement carries the rule, with a residual window (see Concerns).
+- **One idempotent insert path with a dedupe key.** Fan-out, rescans, events and imports all insert through the same function; a unique dedupe key per delivery makes retried and duplicate jobs harmless. Cost: every source must encode its identity into that key correctly.
+- **Archive on expiry rather than delete.** Expired deliveries move to a separate table so the main table stays small and the history survives for auditing. I would confirm with product that history is wanted; if not, this becomes a delete.
+- **Lookup table for notification type, not an enum.** Adding a type is a row, not a migration. I would have kept the enum if product had said no new types were foreseeable.
+- **Cursor pagination for the member list.** Notifications arrive at any time; offsets would skip or repeat items when a new one lands mid-scroll.
+- **Queue behind an interface, with a temporary database stand-in.** Nothing outside `src/queue` knows which queue runs. Cost: the `jobs` table is a throughput ceiling, not built to scale, and must be replaced by the company queue.
+- **No response caching.** Member reads hit indexed rows directly, so nothing needs invalidating on deactivate, remove or click. Cost: every read is a database query.
+- **Deprioritized:** admin audit trail, `/admin` network hardening, cross-instance rate limiting, a per-notification fan-out lock, capacity numbers, and an admin dashboard beyond the endpoints the member side needs to make sense.
+
+## Concerns
+
+Items to raise in a real code review or revisit. Numbers refer to entries in [`docs/build-issues.md`](docs/build-issues.md); letters (H/M/L) to findings in [`docs/code-audit.html`](docs/code-audit.html). Each has my decision recorded there.
+
+- **No admin audit trail.** Any admin can message the whole member base or permanently remove a notification with no record of who did it. I left it out as its own project, but I would raise it immediately.
+- **The tests confirm the code, not the spec.** They were written by the same agent as the code. The test audit found four concurrency tests that would pass under a sequential run (they do not force the race), several tests whose names promise more than the body checks, and tests that pin behaviour the design never states. I would tighten the concurrency tests first.
+- **The production guard is a string match (H1).** Stand-ins are refused only when `NODE_ENV` is exactly `production`; any other value (`staging`, unset) accepts any caller's claimed account id. The guard should be inverted so stand-ins need an explicit opt-in.
+- **Decided (63): deactivation versus an in-flight release.** Due-send locks delivery rows only, not the notification row. An admin deactivate therefore always succeeds, but one batch already being released (up to `DUE_SEND_BATCH`, default 1000 rows) can still go live just after it. The strict alternative costs 409s on admin updates while a release runs. Decided: the window is accepted; admin updates must not fail.
+- **Daily rescan cost scales with notifications × accounts (M1).** Every active filter notification walks the whole accounts table every day, and housekeeping re-enqueues a fan-out every five minutes for any notification with no delivery this month, so an empty-audience notification is scanned 288 times a day. Recording "fan-out completed for month M" on the notification would remove most of it. Deferred until there are real numbers.
+- **Coupled to the host's `accounts` table (H3, 61, 65).** Deliveries carry a foreign key with `ON DELETE CASCADE`, eligibility is SQL over four `accounts` columns, due-send holds shared locks on up to 1000 account rows per batch, and an account delete can deadlock with expiry. Accepted for now; the owner of `accounts` needs to agree.
+- **Deploys cost long jobs an attempt (M4).** A job interrupted by shutdown stays `running` until its 15-minute lease expires, and attempts are counted at claim time, so five unlucky deploys dead-letter a fan-out. Belongs to the queue stand-in.
+- **Dropped events have metrics but no alarm (69),** and **an event can be lost between commit and enqueue** (tech design §13.3): the trigger enqueues after the business write commits and swallows failures. Counted, not recovered; an outbox is the fix.
+- **Query plans not verified at volume (45, 59).** The cursor comparison may not range-seek in MySQL, and expiry ordering needed a workaround because no index serves `(sent_at, id)`.
+- **Import reports are uncapped** (§13.9), and admins have no view of import results beyond the report endpoint.
+- **Documentation.** The code is commented heavily but does not follow a documentation standard.
+
+## Assumptions
+
+Where the spec was ambiguous, I decided:
+
+- **"Wiped after 2 months"** means hidden from members and archived, not deleted; retention is a product and legal question.
+- **"Static months"** means the current and previous calendar month, in UTC, counted from go-live rather than creation.
+- **Images** are stored in cloud object storage; the API accepts a path and the service builds the URL from a configured base. Each notification has its own image.
+- **Member list responses** carry only the headline, subheadline and clicked state; the image and the rest load on the detail view.
+- **Only `isActive` and remove are editable** after creation, since the spec names only those; it must be stated explicitly on create. Whether reactivation is allowed is an open product question.
+- **Refer-a-friend** is an `enrolled` event, with the referring member as the recipient. A pre-ordered audiobook is the event at publication, delivered immediately.
+- **CSV import:** ids not in `accounts` are skipped and listed in the report; a malformed file is rejected whole.
+- **The credits filter** is one inclusive range (`minimum`, `maximum`, each optional).
+- **Remove is permanent:** a removed notification cannot be changed again (409) and leaves members' lists at once.
+- **Delivery is in-app only;** no push, email or SMS.
+- **An admin UI exists or is being built elsewhere;** this repository owns only the external contracts. The real `accounts` table, session and role system, and queue have the shapes in tech design §1.4, each isolated behind one adapter, because I had no access to the existing codebase.
+
+## What's missing for true production readiness
+
+- **A real message queue.** The `jobs` table is a stand-in that will not scale; the `Queue` interface is the contract for the company's queue (Kafka or otherwise).
+- **Real adapters** for the session and role system (`AuthProvider`) and the real `accounts` table, with its shape and stored values confirmed against the stand-in. Production configuration refuses to start without them.
+- **A way for the business code to call `NotificationTrigger`.** Nothing in this repository calls it and `package.json` has no `exports`, so the integration shape (published package or internal endpoint) is undecided, and the first real caller is unwritten. The contracts into existing code (trigger call sites, account data) also need verifying against the actual codebase rather than my assumptions.
+- **An outbox** for trigger events, so an event cannot be lost between the business commit and the enqueue.
+- **CSV uploads in object storage, not MySQL.** Files are capped at `CSV_MAX_BYTES` (10 MiB) but parsed in the API process with no concurrency limit and stored as a `MEDIUMBLOB`; the cap is not validated against the column size.
+- **Alarms and dashboards** wired to the metrics in `docs/metrics.md`, and the metric choices themselves confirmed, since many were my assumptions.
+- **Load testing** of fan-out, due-send and expiry at real volumes, including the index questions in build-issues 45 and 59 and the rescan cost in M1.
+- **Secrets management and deployment wiring** (environments, separate API and worker services, `node dist/scripts/db.js migrate <DB_NAME>` as a release step), and rate limiting that is shared across instances and counts unauthenticated requests (today it runs after auth, per instance).
+- **An admin audit trail** and an admin view of import status and errors.
