@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notification Center Code Audit</title>
+<style>
+/* Layout: one reading column (max 980px) with a sticky section bar; diagrams and tables scroll inside their own boxes. */
+:root {
+  --bg: #f5f6f9;
+  --panel: #ffffff;
+  --panel-2: #eceef4;
+  --fg: #1b2030;
+  --fg-2: #4a5268;
+  --muted: #6c7489;
+  --line: #d3d7e2;
+  --accent: #3550c8;
+  --accent-soft: #e3e8fb;
+  --high: #b3261e;
+  --high-soft: #fbe6e4;
+  --med: #a35a00;
+  --med-soft: #fbeedb;
+  --low: #4d5b78;
+  --low-soft: #e6e9f1;
+  --ok: #1d7044;
+  --ok-soft: #dff2e7;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11141b; --panel: #191d27; --panel-2: #222735; --fg: #e5e8f0; --fg-2: #b4bbcc; --muted: #8b93a8;
+    --line: #333a4c; --accent: #93a6ff; --accent-soft: #232b4d;
+    --high: #ff8a80; --high-soft: #3c1d1c; --med: #f2b25c; --med-soft: #382a14;
+    --low: #a9b4cf; --low-soft: #252b3a; --ok: #6fd39b; --ok-soft: #173224;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11141b; --panel: #191d27; --panel-2: #222735; --fg: #e5e8f0; --fg-2: #b4bbcc; --muted: #8b93a8;
+  --line: #333a4c; --accent: #93a6ff; --accent-soft: #232b4d;
+  --high: #ff8a80; --high-soft: #3c1d1c; --med: #f2b25c; --med-soft: #382a14;
+  --low: #a9b4cf; --low-soft: #252b3a; --ok: #6fd39b; --ok-soft: #173224;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 var(--sans); }
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 80px; }
+h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font-size: 21px; margin: 0 0 4px; letter-spacing: -0.005em; text-wrap: balance; }
+h3 { font-size: 15px; margin: 22px 0 6px; }
+p { margin: 8px 0; max-width: 72ch; }
+section { margin-top: 52px; scroll-margin-top: 56px; }
+.lede { color: var(--fg-2); font-size: 16px; }
+.sub { color: var(--muted); margin: 0 0 14px; max-width: 72ch; }
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+nav.bar { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
+nav.bar div { max-width: 980px; margin: 0 auto; padding: 9px 20px; display: flex; gap: 6px 18px; flex-wrap: wrap; font-size: 13px; }
+nav.bar a { text-decoration: none; color: var(--fg-2); }
+nav.bar a:hover { color: var(--accent); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 22px 0 0; }
+.facts div { background: var(--panel); padding: 12px 14px; }
+.facts b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.facts span { color: var(--muted); font-size: 12.5px; }
+.verdict { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; margin: 22px 0 0; }
+.verdict p { margin: 6px 0; }
+figure { margin: 16px 0 0; }
+.dia { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; }
+.dia svg { display: block; min-width: 720px; width: 100%; height: auto; font-family: var(--sans); }
+figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; max-width: 78ch; }
+.bx { fill: var(--panel-2); stroke: var(--line); stroke-width: 1; }
+.bx-out { fill: none; stroke: var(--fg-2); stroke-width: 1.2; }
+.bx-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+.bx-ext { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.bx-bad { fill: var(--high-soft); stroke: var(--high); stroke-width: 1.2; }
+.t { fill: var(--fg); font-size: 12.5px; }
+.tb { fill: var(--fg); font-size: 12.5px; font-weight: 650; }
+.ts { fill: var(--muted); font-size: 11px; }
+.tl { fill: var(--fg-2); font-size: 11px; }
+.tm { fill: var(--fg-2); font-size: 11px; font-family: var(--mono); }
+.ar { stroke: var(--fg-2); stroke-width: 1.3; fill: none; }
+.ah { fill: var(--fg-2); }
+.tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-top: 14px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; background: var(--panel-2); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tier { margin-top: 26px; }
+.tier > header { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.tier > header h3 { margin: 0; font-size: 16px; }
+.tier > header span { color: var(--muted); font-size: 13px; }
+ol.read { list-style: none; margin: 10px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+ol.read li { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 4px 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+ol.read li:last-child { border-bottom: 0; }
+ol.read input { margin: 4px 0 0; width: 16px; height: 16px; accent-color: var(--accent); }
+ol.read .f { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+ol.read .f a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--line); }
+ol.read .f a:hover { color: var(--accent); border-color: var(--accent); }
+ol.read .why { grid-column: 2 / 4; color: var(--fg-2); font-size: 13.5px; max-width: 78ch; }
+ol.read .why b { color: var(--fg); font-weight: 600; }
+ol.read .tests { grid-column: 2 / 4; color: var(--muted); font-size: 12.5px; font-family: var(--mono); max-width: 90ch; line-height: 1.5; }
+ol.read .tests b { font-family: var(--sans); color: var(--fg-2); font-weight: 600; }
+ol.read .m { color: var(--muted); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+ol.read li.done .f a, ol.read li.done .why, ol.read li.done .tests { opacity: 0.5; }
+.find { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-top: 12px; padding: 14px 16px; }
+.find h4 { margin: 0; font-size: 15px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.find p { margin: 7px 0 0; font-size: 14px; max-width: 80ch; }
+.find .loc { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.find .fix { color: var(--fg-2); }
+.find .fix b { color: var(--fg); }
+.sev { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+.sev.h { color: var(--high); background: var(--high-soft); }
+.sev.m { color: var(--med); background: var(--med-soft); }
+.sev.l { color: var(--low); background: var(--low-soft); }
+.sev.g { color: var(--ok); background: var(--ok-soft); }
+.bars { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 7px 12px; align-items: center; margin-top: 14px; font-size: 13px; }
+.bars .lab { font-family: var(--mono); }
+.bars .bar { height: 12px; background: var(--panel-2); border-radius: 3px; }
+.bars .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.bars .bar i.t2 { background: var(--muted); }
+.bars .num { font-variant-numeric: tabular-nums; color: var(--fg-2); text-align: right; }
+ul.tight { margin: 8px 0; padding-left: 20px; max-width: 78ch; }
+ul.tight li { margin: 5px 0; }
+.note { background: var(--panel-2); border-radius: 8px; padding: 12px 14px; font-size: 13.5px; color: var(--fg-2); margin-top: 14px; max-width: 80ch; }
+@media (max-width: 560px) {
+  h1 { font-size: 24px; }
+  ol.read li { grid-template-columns: 24px minmax(0, 1fr); }
+  ol.read .m { grid-column: 2; }
+  ol.read .why, ol.read .tests { grid-column: 2; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<nav class="bar"><div>
+  <a href="#verdict">Verdict</a>
+  <a href="#system">System map</a>
+  <a href="#tests">Test audit</a>
+  <a href="#read">Reading order</a>
+  <a href="#lifecycle">Delivery lifecycle</a>
+  <a href="#flows">Three flows</a>
+  <a href="#queue">Queue &amp; timers</a>
+  <a href="#locks">Lock map</a>
+  <a href="#findings">Findings</a>
+  <a href="#solid">What holds up</a>
+</div></nav>
+
+<div class="wrap">
+
+<header id="verdict">
+  <h1>Notification Center: architecture and code audit</h1>
+  <p class="lede">An audit of the agent-written code in <code>src/</code>, <code>migrations/</code> and <code>scripts/</code>, built to help you decide what to read by hand and in what order. Audited at commit <code>20eff41</code> on 2026-10-06.</p>
+
+  <div class="verdict">
+    <p><strong>The delivery logic is careful and consistent. The system around it is not yet deployable.</strong> Every delivery row goes through one insert function, one cancellation rule and idempotent job handlers, and the concurrency reasoning is written down next to the SQL it protects.</p>
+    <p>The gaps are at the edges: auth and the queue exist only as stand-ins that refuse to start in production, the event flow has no caller inside this repo, and the service reaches straight into the host application's <code>accounts</code> table. Several background paths also cost more than they need to as data grows.</p>
+    <p><b>Start with the <a href="#tests">test audit</a></b>: where the tests assert less than, or something other than, the design says.</p>
+    <p>If you only have four hours, read <a href="#read">tier 1</a>: what each job and handler does to rows, which is where every invariant lives.</p>
+  </div>
+
+  <div class="facts">
+    <div><b>4,904</b><span>lines of source, migrations and scripts</span></div>
+    <div><b>11,913</b><span>lines of tests (2.4 : 1)</span></div>
+    <div><b>71</b><span>commits, all on one day</span></div>
+    <div><b>0 errors</b><span>typecheck and lint</span></div>
+    <div><b>351 / 351</b><span>unit tests pass</span></div>
+    <div><b>574 / 574</b><span>integration and contract tests pass (real MySQL)</span></div>
+  </div>
+
+  <div class="note"><strong>Scope.</strong> The <code>docs/</code> folder was not read, as requested. Code comments cite spec sections (<code>§7.4</code>, <code>B5</code>) throughout, so this audit judges the code on its own terms: internal consistency, failure behaviour and cost. It does not check conformance to the spec. Keep the spec open beside the code when you read; many comments only make sense with it.</div>
+</header>
+
+<section id="system">
+  <h2>System map</h2>
+  <p class="sub">One image, two processes, one MySQL database. The queue is a table in that same database.</p>
+  <figure>
+    <div class="dia">
+    <svg viewBox="0 0 940 460" role="img" aria-label="Clients call the API process; the API and the host application both enqueue jobs into a MySQL jobs table; the worker process claims those jobs and runs four timers; all state lives in one MySQL database that also holds the host-owned accounts table.">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+
+      <rect class="bx" x="10" y="50" width="170" height="50" rx="6"/>
+      <text class="tb" x="95" y="72" text-anchor="middle">Member client</text>
+      <text class="ts" x="95" y="88" text-anchor="middle">list · read · mark clicked</text>
+      <rect class="bx" x="10" y="130" width="170" height="50" rx="6"/>
+      <text class="tb" x="95" y="152" text-anchor="middle">Admin tool</text>
+      <text class="ts" x="95" y="168" text-anchor="middle">create · toggle · CSV import</text>
+      <rect class="bx-ext" x="10" y="300" width="170" height="90" rx="6"/>
+      <text class="tb" x="95" y="322" text-anchor="middle">Host app code</text>
+      <text class="ts" x="95" y="338" text-anchor="middle">ship · enroll · account change</text>
+      <rect class="bx" x="24" y="348" width="142" height="30" rx="4"/>
+      <text class="tm" x="95" y="367" text-anchor="middle">NotificationTrigger</text>
+
+      <rect class="bx-out" x="250" y="20" width="330" height="180" rx="8"/>
+      <text class="tb" x="265" y="42">API process</text>
+      <text class="tm" x="570" y="42" text-anchor="end">src/api.ts → app.ts</text>
+      <rect class="bx" x="265" y="54" width="300" height="44" rx="4"/>
+      <text class="tl" x="415" y="72" text-anchor="middle">context → error map → health → auth</text>
+      <text class="tl" x="415" y="88" text-anchor="middle">→ rate limit → admin gate → JSON body</text>
+      <rect class="bx" x="265" y="110" width="142" height="76" rx="4"/>
+      <text class="tb" x="336" y="132" text-anchor="middle">Member router</text>
+      <text class="tm" x="336" y="150" text-anchor="middle">/notifications</text>
+      <text class="ts" x="336" y="168" text-anchor="middle">3 routes</text>
+      <rect class="bx" x="423" y="110" width="142" height="76" rx="4"/>
+      <text class="tb" x="494" y="132" text-anchor="middle">Admin router</text>
+      <text class="tm" x="494" y="150" text-anchor="middle">/admin/notifications</text>
+      <text class="ts" x="494" y="168" text-anchor="middle">8 routes</text>
+
+      <rect class="bx-out" x="250" y="250" width="330" height="190" rx="8"/>
+      <text class="tb" x="265" y="272">Worker process</text>
+      <text class="tm" x="570" y="272" text-anchor="end">src/worker.ts</text>
+      <rect class="bx" x="265" y="284" width="142" height="142" rx="4"/>
+      <text class="tb" x="336" y="304" text-anchor="middle">Queue consumer</text>
+      <text class="tm" x="336" y="326" text-anchor="middle">fanout_filter</text>
+      <text class="tm" x="336" y="344" text-anchor="middle">event_delivery</text>
+      <text class="tm" x="336" y="362" text-anchor="middle">account_recheck</text>
+      <text class="tm" x="336" y="380" text-anchor="middle">process_import</text>
+      <text class="tm" x="336" y="398" text-anchor="middle">cancel_scheduled</text>
+      <rect class="bx" x="423" y="284" width="142" height="142" rx="4"/>
+      <text class="tb" x="494" y="304" text-anchor="middle">Scheduler</text>
+      <text class="tm" x="494" y="326" text-anchor="middle">due_send</text>
+      <text class="tm" x="494" y="344" text-anchor="middle">rescan ◆</text>
+      <text class="tm" x="494" y="362" text-anchor="middle">expiry ◆</text>
+      <text class="tm" x="494" y="380" text-anchor="middle">housekeeping ◆</text>
+      <text class="ts" x="494" y="412" text-anchor="middle">◆ leader only</text>
+
+      <rect class="bx-out" x="690" y="20" width="240" height="420" rx="8"/>
+      <text class="tb" x="705" y="42">MySQL 8</text>
+      <rect class="bx" x="702" y="54" width="216" height="34" rx="4"/>
+      <text class="tm" x="810" y="75" text-anchor="middle">notifications</text>
+      <rect class="bx" x="702" y="98" width="216" height="34" rx="4"/>
+      <text class="tm" x="810" y="119" text-anchor="middle">notification_deliveries</text>
+      <rect class="bx" x="702" y="142" width="216" height="34" rx="4"/>
+      <text class="tm" x="810" y="163" text-anchor="middle">imports · runs · files · errors</text>
+      <rect class="bx-acc" x="702" y="206" width="216" height="38" rx="4"/>
+      <text class="tm" x="810" y="222" text-anchor="middle">jobs</text>
+      <text class="ts" x="810" y="237" text-anchor="middle">stand-in queue</text>
+      <rect class="bx" x="702" y="274" width="216" height="34" rx="4"/>
+      <text class="tm" x="810" y="295" text-anchor="middle">archived_notification_deliveries</text>
+      <rect class="bx" x="702" y="318" width="216" height="34" rx="4"/>
+      <text class="tm" x="810" y="339" text-anchor="middle">scheduled_runs</text>
+      <rect class="bx-ext" x="702" y="372" width="216" height="50" rx="4"/>
+      <text class="tm" x="810" y="393" text-anchor="middle">accounts</text>
+      <text class="ts" x="810" y="410" text-anchor="middle">owned by the host app</text>
+
+      <line class="ar" x1="180" y1="75" x2="248" y2="75" marker-end="url(#a1)"/>
+      <text class="tl" x="214" y="68" text-anchor="middle">HTTP</text>
+      <line class="ar" x1="180" y1="155" x2="248" y2="155" marker-end="url(#a1)"/>
+      <text class="tl" x="214" y="148" text-anchor="middle">HTTP</text>
+
+      <line class="ar" x1="580" y1="70" x2="688" y2="70" marker-end="url(#a1)"/>
+      <text class="tl" x="634" y="63" text-anchor="middle">read / write</text>
+      <line class="ar" x1="580" y1="185" x2="700" y2="214" marker-end="url(#a1)"/>
+      <text class="tl" x="634" y="184" text-anchor="middle">enqueue</text>
+      <path class="ar" d="M180,330 H215 V225 H700" marker-end="url(#a1)"/>
+      <text class="tl" x="262" y="219">enqueue event_delivery · account_recheck</text>
+      <line class="ar" x1="700" y1="237" x2="582" y2="266" marker-end="url(#a1)"/>
+      <text class="tl" x="634" y="272" text-anchor="middle">claim</text>
+      <line class="ar" x1="580" y1="400" x2="688" y2="400" marker-end="url(#a1)"/>
+      <text class="tl" x="634" y="393" text-anchor="middle">read / write</text>
+    </svg>
+    </div>
+    <figcaption>Dashed boxes are outside this repo. The host application writes into <code>jobs</code> directly through the <code>NotificationTrigger</code> library class, bypassing the API. The worker reads the host's <code>accounts</code> table to decide who is eligible.</figcaption>
+  </figure>
+
+  <h3>Where the code is</h3>
+  <div class="bars" aria-label="Lines of code per module">
+    <span class="lab">src/admin</span><span class="bar"><i style="width:16%"></i></span><span class="num">849</span>
+    <span class="lab">src/scheduler</span><span class="bar"><i style="width:14.6%"></i></span><span class="num">775</span>
+    <span class="lab">src/jobs</span><span class="bar"><i style="width:11.6%"></i></span><span class="num">618</span>
+    <span class="lab">src/queue</span><span class="bar"><i style="width:9.4%"></i></span><span class="num">501</span>
+    <span class="lab">src/lib</span><span class="bar"><i style="width:9.1%"></i></span><span class="num">486</span>
+    <span class="lab">api · app · worker</span><span class="bar"><i style="width:6.5%"></i></span><span class="num">343</span>
+    <span class="lab">src/middleware</span><span class="bar"><i style="width:5.9%"></i></span><span class="num">313</span>
+    <span class="lab">src/member</span><span class="bar"><i style="width:3.8%"></i></span><span class="num">201</span>
+    <span class="lab">migrations</span><span class="bar"><i style="width:3.1%"></i></span><span class="num">167</span>
+    <span class="lab">src/eligibility</span><span class="bar"><i style="width:3.1%"></i></span><span class="num">164</span>
+    <span class="lab">src/trigger</span><span class="bar"><i style="width:2.9%"></i></span><span class="num">152</span>
+    <span class="lab">src/config</span><span class="bar"><i style="width:2.7%"></i></span><span class="num">144</span>
+    <span class="lab">scripts</span><span class="bar"><i style="width:2.2%"></i></span><span class="num">117</span>
+    <span class="lab">src/db</span><span class="bar"><i style="width:1.4%"></i></span><span class="num">74</span>
+    <span class="lab">test/integration</span><span class="bar"><i class="t2" style="width:100%"></i></span><span class="num">5,315</span>
+    <span class="lab">test/contract</span><span class="bar"><i class="t2" style="width:71.5%"></i></span><span class="num">3,798</span>
+    <span class="lab">test/unit</span><span class="bar"><i class="t2" style="width:41.3%"></i></span><span class="num">2,195</span>
+  </div>
+  <p class="sub" style="margin-top:10px">Lines per directory, on one scale. Tests in grey. The largest single file is <code>src/queue/dbQueue.ts</code> at 453 lines.</p>
+</section>
+
+<section id="tests">
+  <h2>Test audit: what to review first</h2>
+  <p class="sub">Three independent read-only auditors read the assertion bodies, not the names, against the tech design. Line numbers are as reported and not re-verified here. <b>Strong:</b> exact row sets and boundary instants in cancellation, due-send, expiry, housekeeping and queue fencing; byte-identical member 404s; exact response shapes on most success bodies; the nine design scenarios present, in order, ending queue-idle; <code>seenBy</code> reads the member list for all 72 accounts.</p>
+
+  <div class="tier">
+    <header><h3>A. Concurrency claims that do not force the race</h3><span>a sequential run would also pass</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="ta1" aria-label="Review queue claim test"><span class="f">integration/queue.test.ts:150 (as reported)</span>
+        <span class="why"><b>Claims</b> two workers never take the same job. <b>Asserts</b> two pools under <code>Promise.all</code> return disjoint ids.</span><span class="tests"><b>Decide</b> tighten with gated interleaving, as in queue.fencing.test.ts:107.</span></li>
+      <li><input type="checkbox" id="ta2" aria-label="Review due-send release test"><span class="f">integration/event.dueSend.test.ts:179 (as reported)</span>
+        <span class="why"><b>Claims</b> a row is never released twice. <b>Asserts</b> the <code>due_send_released</code> metric sum after <code>Promise.all</code>, not row state.</span><span class="tests"><b>Decide</b> tighten with a held transaction, as in event.dueSend.test.ts:150.</span></li>
+      <li><input type="checkbox" id="ta3" aria-label="Review duplicate fan-out test"><span class="f">integration/filter.fanout.test.ts:89 (as reported)</span>
+        <span class="why"><b>Claims</b> duplicate fan-outs are harmless. <b>Asserts</b> the outcome of copies that need not overlap.</span><span class="tests"><b>Decide</b> tighten (force the overlap) or accept as a duplicate-run test.</span></li>
+      <li><input type="checkbox" id="ta4" aria-label="Review duplicate event test"><span class="f">integration/event.delivery.test.ts:105 (as reported)</span>
+        <span class="why"><b>Claims</b> a duplicate event is absorbed. <b>Asserts</b> only <code>toHaveLength(2)</code>.</span><span class="tests"><b>Decide</b> tighten: force the race and pin the rows.</span></li>
+    </ol>
+  </div>
+
+  <div class="tier">
+    <header><h3>B. Names that promise more than the body checks</h3><span>tighten the test, or narrow the name</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="tb1" aria-label="Review scenario.auth 404"><span class="f">contract/scenario.auth.test.ts:12 (as reported)</span>
+        <span class="why"><b>Claims</b> one 404 body for every id a member may not see. <b>Asserts</b> it on another member's delivery whose notification is then removed, so ownership alone is not shown to 404; out-of-window is absent.</span><span class="tests"><b>Decide</b> tighten: add a live other-member case and an out-of-window case.</span></li>
+      <li><input type="checkbox" id="tb2" aria-label="Review scenario.coverage labels"><span class="f">contract/scenario.coverage.test.ts:81, :101 (as reported)</span>
+        <span class="why"><b>Claims</b> "(B4)" and "expiry (B16)". <b>Asserts</b> B8 under the B4 label; the expiry case never checks the archive table.</span><span class="tests"><b>Decide</b> fix the label; tighten B16 to read the archive.</span></li>
+      <li><input type="checkbox" id="tb3" aria-label="Review scenario liveDate checks"><span class="f">contract/scenario.filter:17 · scenario.spec:67 · scenario.event:95 (as reported)</span>
+        <span class="why"><b>Claims</b> month-2 resend, enrol + 5 days, reactivation. <b>Asserts</b> a count only (coverage:81 does pin id and liveDate); liveDate as a range, not an instant; no liveDate on the reactivated item.</span><span class="tests"><b>Decide</b> tighten: pin ids and exact instants.</span></li>
+      <li><input type="checkbox" id="tb4" aria-label="Review admin.list filters"><span class="f">contract/admin.list.test.ts:112, :94 (as reported)</span>
+        <span class="why"><b>Claims</b> cursor reuse under other filters is rejected; type and date filters work. <b>Asserts</b> status only, not <code>VALIDATION_ERROR</code>; counts only, with the &gt;= / &lt; edges and plain-date timezone unpinned.</span><span class="tests"><b>Decide</b> tighten.</span></li>
+      <li><input type="checkbox" id="tb5" aria-label="Review admin update and get"><span class="f">contract/admin.update:157/187/215/236, :75, :54 · admin.get:93 · admin.createImportRun:48 (as reported)</span>
+        <span class="why"><b>Claims</b> PATCH returns a NotificationDetail; shape errors precede 404; bad ids and a completed run are refused. <b>Asserts</b> <code>toMatchObject</code> only, and status codes only for the error cases.</span><span class="tests"><b>Decide</b> tighten to full bodies, or accept for the error cases.</span></li>
+      <li><input type="checkbox" id="tb6" aria-label="Review queue retry and housekeeping edge"><span class="f">integration/queue.test.ts:64 · housekeeping.test.ts:71 (as reported)</span>
+        <span class="why"><b>Claims</b> retry then dead-letter; stale imports re-enqueued after 10 minutes. <b>Asserts</b> with 3 attempts, so the fifth-failure default and <code>last_error</code> are unchecked; the stale case at 11 minutes, not the edge.</span><span class="tests"><b>Decide</b> tighten: assert the default of 5 and the 10-minute boundary.</span></li>
+      <li><input type="checkbox" id="tb7" aria-label="Review schedule wiring and oracle"><span class="f">unit/schedule.test.ts:32 · integration/event.dueSend.test.ts:282 (as reported)</span>
+        <span class="why"><b>Claims</b> the rescan schedule; due-send respects cancellation. <b>Asserts</b> the MONTH_START maths, not that rescan is wired to 06:00 daily plus 00:05 on the 1st; cancellation using the code's own predicate as oracle.</span><span class="tests"><b>Decide</b> tighten: test the timer table; use literal expected rows.</span></li>
+    </ol>
+  </div>
+
+  <div class="tier">
+    <header><h3>C. Behaviour the design does not state</h3><span>add it to the design, or drop the test</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="tc1" aria-label="Review confirmed design gaps"><span class="f">expiry:194 · filter.fanout:288 · cancellation:28 · scenario.import:48 (as reported)</span>
+        <span class="why">Expiry orders by (sent_at, due_at, id), design says (sent_at, id); fan-out skips empty id ranges, design says "advance by 10,000"; the rule relies on whole-second <code>created_at</code>; member liveDate is the release run time (14:31), not the admin date (14:30).</span><span class="tests"><b>Decide</b> update design wording: build-issues 59, 54, 4 and 111 (B12) are already confirmed.</span></li>
+      <li><input type="checkbox" id="tc2" aria-label="Review idempotency key semantics"><span class="f">admin.createFilter:82 · createFilter / createEvent replay cases (as reported)</span>
+        <span class="why">A key upper-cased counts as the same key (design silent on case); replays match under reordered keys, untrimmed values and duplicates, because the hash is canonicalised (design: "SHA-256 of the request body", build-issues 48).</span><span class="tests"><b>Decide</b> add both to the design, or drop the tests.</span></li>
+      <li><input type="checkbox" id="tc3" aria-label="Review enqueue failure and shell pins"><span class="f">createFilter:74 · createImport:167, :220, :232 · createImportRun:141 · update:251 · shell.gate:55, :125, :148 · shell.http:16 (as reported)</span>
+        <span class="why">Failed enqueue still returns 201/202/200 (§7 says so, §3 silent); wrong method gives 404 not 405; admin path casing gives 404; 1 MB JSON cap; year 10000 gives 400 (build-issues 23, 20, 79); exact Retry-After values.</span><span class="tests"><b>Decide</b> state these in §3 and the shell section, or drop.</span></li>
+      <li><input type="checkbox" id="tc4" aria-label="Review member ordering and ids"><span class="f">member.list:106 · member B14 fixtures (as reported)</span>
+        <span class="why">Tie-break by <code>public_id</code> descending; fixtures pin a 15-character public id while §9.2 says member ids are not shape-validated (build-issues 41).</span><span class="tests"><b>Decide</b> add the tie-break to the design; loosen the fixtures or the wording.</span></li>
+      <li><input type="checkbox" id="tc5" aria-label="Review implementation-bound pins"><span class="f">Implementation-bound pins (as reported)</span>
+        <span class="why">Message strings ("Idempotency-Key header must be a UUID", limit/cursor and 503 messages, "lease lost"), DB column values, SQL text (admin.list:147, :79 oracle), lock modes and counts (event.dueSend:194, :219), FORCE INDEX (expiry:318, :417), log <code>stopReason</code> strings.</span><span class="tests"><b>Decide</b> accept: not wrong, but they break on permitted refactors.</span></li>
+    </ol>
+  </div>
+
+  <div class="tier">
+    <header><h3>D. Missing: no test found</h3><span>as reported</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="td1" aria-label="Review missing validation tests"><span class="f">Validation edges</span>
+        <span class="why">Image path ≤ 1024 and link path ≤ 2048; negative credits; a CSV with a header and no data rows; CSV ids of 0 or below.</span><span class="tests"><b>Decide</b> add tests, or accept.</span></li>
+      <li><input type="checkbox" id="td2" aria-label="Review missing shell tests"><span class="f">Shell and operations</span>
+        <span class="why">Rate limit never applied to unauthenticated requests (auth before rateLimit) and 429-vs-403 precedence; 503 on a normal route with the database down (only <code>/readyz</code> is tested); default limits 120/600 at contract scope.</span><span class="tests"><b>Decide</b> add tests, or accept.</span></li>
+      <li><input type="checkbox" id="td3" aria-label="Review missing end-to-end tests"><span class="f">End to end</span>
+        <span class="why">B11 trigger safety has no end-to-end test; the B16 archive move is proven only at integration level.</span><span class="tests"><b>Decide</b> add contract scenarios, or accept.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section id="read">
+  <h2>Reading order</h2>
+  <p class="sub"><b>This order follows your review priorities: behaviour first, stand-ins and scheduling plumbing last.</b> Tier 1 is what each job, timer and handler does to rows, each with the question to hold in mind while reading. Times assume line-by-line reading. Each item names the test files that exercise it (paths under <code>test/</code>, <code>.test.ts</code> omitted). Ticks are saved in this browser.</p>
+
+  <div class="tier">
+    <header><h3>Tier 1: what the jobs and handlers do</h3><span>read every line · about 4 hours</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="r1" aria-label="Read initial migration"><span class="f"><a href="../migrations/20261001000100_initial.ts">migrations/20261001000100_initial.ts</a></span><span class="m">122 lines · 15 min</span>
+        <span class="why"><b>Check:</b> does every rule below have a column or unique key behind it (<code>sent_at IS NULL</code> = scheduled; <code>(notification_id, account_id, dedupe_key)</code> = the only duplicate guard), and should line 50 cascade from the host's <code>accounts</code>?</span><span class="tests"><b>Tests</b> integration/db.migrations, integration/schema-seed, unit/dbScript.</span></li>
+      <li><input type="checkbox" id="r2" aria-label="Read insertDeliveries"><span class="f"><a href="../src/lib/insertDeliveries.ts">src/lib/insertDeliveries.ts</a></span><span class="m">83 lines · 15 min</span>
+        <span class="why"><b>Check:</b> can any path create a delivery twice, or count a duplicate as sent? Follow the missing-account retry (55) and the <code>public_id</code> clash retry (69).</span><span class="tests"><b>Tests</b> integration/insertDeliveries, integration/cancellation, integration/event.dueSend.</span></li>
+      <li><input type="checkbox" id="r3" aria-label="Read cancellation"><span class="f"><a href="../src/lib/cancellation.ts">src/lib/cancellation.ts</a></span><span class="m">70 lines · 15 min</span>
+        <span class="why"><b>Check:</b> is "cancelled" exactly "created at or before the last deactivation", and are the two SQL strings (13 to 16) exact negations? See L1 for the same-second edge.</span><span class="tests"><b>Tests</b> integration/cancellation, event.cancellation, housekeepingCancelLock, event.dueSend.</span></li>
+      <li><input type="checkbox" id="r4" aria-label="Read fanoutFilter and buildQuery"><span class="f"><a href="../src/jobs/fanoutFilter.ts">src/jobs/fanoutFilter.ts</a> + <a href="../src/eligibility/buildQuery.ts">src/eligibility/buildQuery.ts</a></span><span class="m">251 lines · 25 min</span>
+        <span class="why"><b>Check:</b> does the fan-out stop when the notification is deactivated or removed mid-run, and can any stored filter widen the audience instead of failing closed?</span><span class="tests"><b>Tests</b> integration/filter.fanout, filter.accountRecheck, unit/eligibility, contract/scenario.filter.</span></li>
+      <li><input type="checkbox" id="r5" aria-label="Read eventDelivery and accountRecheck"><span class="f"><a href="../src/jobs/eventDelivery.ts">src/jobs/eventDelivery.ts</a> + <a href="../src/jobs/accountRecheck.ts">src/jobs/accountRecheck.ts</a></span><span class="m">237 lines · 20 min</span>
+        <span class="why"><b>Check:</b> is the delay counted from the event time, is ignoring it for <code>preenrollAudiobook</code> (90) what the spec wants, and should events older than the visibility window be dropped silently (111)?</span><span class="tests"><b>Tests</b> integration/event.delivery, event.dueSend, event.cancellation, filter.accountRecheck, contract/scenario.event, scenario.spec.</span></li>
+      <li><input type="checkbox" id="r6" aria-label="Read cancelScheduled"><span class="f"><a href="../src/jobs/cancelScheduled.ts">src/jobs/cancelScheduled.ts</a></span><span class="m">71 lines · 10 min</span>
+        <span class="why"><b>Check:</b> after a deactivation, are exactly the scheduled (unsent) rows removed, and are already-visible deliveries left alone (see L6)?</span><span class="tests"><b>Tests</b> integration/event.cancellation, housekeepingCancelLock, contract/admin.update, scenario.filter.</span></li>
+      <li><input type="checkbox" id="r7" aria-label="Read processImport and createImport"><span class="f"><a href="../src/jobs/processImport.ts">src/jobs/processImport.ts</a> + <a href="../src/admin/createImport.ts">src/admin/createImport.ts</a> + <a href="../src/admin/createImportRun.ts">createImportRun.ts</a></span><span class="m">400 lines · 35 min</span>
+        <span class="why"><b>Check:</b> does each listed account get the notification once, ever, at the run's live date, and does every run end <code>completed</code> or <code>failed</code> with its file deleted?</span><span class="tests"><b>Tests</b> integration/import.process, contract/admin.createImport, admin.getImport, admin.importKeys, admin.createImportRun, scenario.import, unit/csvShape, unit/csvAccountIds.</span></li>
+      <li><input type="checkbox" id="r8" aria-label="Read timer run functions"><span class="f"><a href="../src/scheduler/dueSend.ts">dueSend.ts</a> · <a href="../src/scheduler/expiry.ts">expiry.ts</a> · <a href="../src/scheduler/rescan.ts">rescan.ts</a> · <a href="../src/scheduler/housekeeping.ts">housekeeping.ts</a></span><span class="m">370 lines · 35 min</span>
+        <span class="why"><b>Check:</b> what each run does to rows, not when it runs. Due-send: does a row become visible only if still not cancelled? Expiry: which rows move, at which boundary? Rescan: which notifications are re-fanned out? Housekeeping: what is deleted, and what re-enqueued?</span><span class="tests"><b>Tests</b> integration/event.dueSend, expiry, filter.rescan, housekeeping, housekeepingChunks, contract/scenario.coverage, scenario.spec.</span></li>
+      <li><input type="checkbox" id="r9" aria-label="Read trigger"><span class="f"><a href="../src/trigger/index.ts">src/trigger/index.ts</a></span><span class="m">152 lines · 10 min</span>
+        <span class="why"><b>Check:</b> is this the call the host application will make for each event, and can a bad call do harm beyond being refused? See H2.</span><span class="tests"><b>Tests</b> unit/trigger, integration/event.trigger.</span></li>
+      <li><input type="checkbox" id="r10" aria-label="Read admin handlers"><span class="f"><a href="../src/admin/updateNotification.ts">updateNotification.ts</a> · <a href="../src/admin/createFilter.ts">createFilter.ts</a> · <a href="../src/admin/createEvent.ts">createEvent.ts</a> · <a href="../src/admin/schemas.ts">schemas.ts</a> · <a href="../src/admin/idempotentInsert.ts">idempotentInsert.ts</a></span><span class="m">about 40 min</span>
+        <span class="why"><b>Check:</b> does the admin API accept exactly what the spec allows and return what it promises; does every activate/deactivate/remove write <code>cancelled_before</code> correctly; does a replayed Idempotency-Key return the first answer on the same endpoint?</span><span class="tests"><b>Tests</b> contract/admin.update, admin.createFilter, admin.createEvent, admin.list, admin.get, unit/admin.schemas, admin.updateSchema, idempotencyKey.</span></li>
+      <li><input type="checkbox" id="r11" aria-label="Read member visibility"><span class="f"><a href="../src/member/visibility.ts">src/member/visibility.ts</a> + <a href="../src/member/listDeliveries.ts">listDeliveries.ts</a></span><span class="m">111 lines · 10 min</span>
+        <span class="why"><b>Check:</b> does a member see exactly their own live, unexpired deliveries of non-removed notifications, and get the same 404 for everything else?</span><span class="tests"><b>Tests</b> contract/member.list, member.get, member.update, scenario.auth, unit/member.schemas, member.patchBody.</span></li>
+    </ol>
+  </div>
+
+  <div class="tier">
+    <header><h3>Tier 2: safety nets</h3><span>re-read for recovery behaviour · about 40 minutes</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="r12" aria-label="Read housekeeping re-enqueue"><span class="f"><a href="../src/scheduler/housekeeping.ts">src/scheduler/housekeeping.ts</a></span><span class="m">110 lines · 10 min</span>
+        <span class="why">The re-enqueue duties that make "enqueue failed, carry on" safe: fan-outs with no delivery this month, imports idle for 10 minutes. Ask what is lost if this never runs.</span><span class="tests"><b>Tests</b> integration/housekeeping, housekeepingChunks, housekeepingCancelLock.</span></li>
+      <li><input type="checkbox" id="r13" aria-label="Read recheck after event"><span class="f"><a href="../src/jobs/eventDelivery.ts">eventDelivery.ts:140</a> → <a href="../src/jobs/accountRecheck.ts">accountRecheck.ts</a></span><span class="m">10 min</span>
+        <span class="why">Every event ends by re-evaluating the account against active filter notifications, skipping those already delivered this month (c35e87e). The net for accounts whose change made them newly eligible.</span><span class="tests"><b>Tests</b> integration/filter.accountRecheck.</span></li>
+      <li><input type="checkbox" id="r14" aria-label="Read due-send guard"><span class="f"><a href="../src/scheduler/dueSend.ts">src/scheduler/dueSend.ts</a></span><span class="m">89 lines · 10 min</span>
+        <span class="why">The guarded <code>UPDATE</code> that decides and writes in one statement so a deactivation cannot slip between, and the delete on line 54. Entry 63 is decided: delivery rows only are locked, the residual one-batch window is accepted, admin updates must not fail.</span><span class="tests"><b>Tests</b> integration/event.dueSend (concurrent batches, with failure diagnostics since 515db25), event.cancellation.</span></li>
+      <li><input type="checkbox" id="r15" aria-label="Read time and error mapping"><span class="f"><a href="../src/lib/time.ts">src/lib/time.ts</a> + <a href="../src/middleware/errorMapper.ts">src/middleware/errorMapper.ts</a></span><span class="m">10 min</span>
+        <span class="why">Midnight in the business timezone across daylight-saving gaps (time.ts 45 to 58), and which thrown things become 400, 409, 503 or 500.</span><span class="tests"><b>Tests</b> unit/time, unit/errorMapper, errorMapper.httpErrors, errorMapper.notFound.</span></li>
+    </ol>
+  </div>
+
+  <div class="tier">
+    <header><h3>Tier 3: stand-ins and plumbing</h3><span>skip unless curious</span></header>
+    <ol class="read">
+      <li><input type="checkbox" id="r16" aria-label="Skim dbQueue"><span class="f"><a href="../src/queue/dbQueue.ts">src/queue/dbQueue.ts</a></span><span class="m">453 lines</span>
+        <span class="why">The jobs-table queue stand-in: <code>SKIP LOCKED</code> claims, lease fencing, recovery. Replaceable; findings M4 and M5 apply only while it survives.</span><span class="tests"><b>Tests</b> integration/queue, queue.fencing, queue.heartbeat, queue.robustness, queue.metricsSafety, jobs.onDead, worker.</span></li>
+      <li><input type="checkbox" id="r17" aria-label="Skim scheduler mechanics"><span class="f"><a href="../src/scheduler/index.ts">scheduler/index.ts</a> · <a href="../src/scheduler/leader.ts">leader.ts</a> · <a href="../src/scheduler/schedule.ts">schedule.ts</a></span><span class="m">403 lines</span>
+        <span class="why">Timer registry, tick, catch-up of the most recent missed run (ab7cf3a), MySQL <code>GET_LOCK</code> leader election and cron maths. See L2.</span><span class="tests"><b>Tests</b> unit/scheduler, unit/schedule, unit/cron, integration/scheduler, integration/leader.</span></li>
+      <li><input type="checkbox" id="r18" aria-label="Skim auth and accounts stand-ins"><span class="f">src/middleware/headerAuth.ts · migrations/20261001000000_standin_accounts.ts · scripts/seed.ts · seedAccounts.ts</span><span class="m">stand-ins</span>
+        <span class="why">Header auth and the stand-in accounts table and seed, both to be replaced by the host's. See H3.</span><span class="tests"><b>Tests</b> unit/headerAuth, unit/standinMigration, integration/schema-seed.</span></li>
+      <li><input type="checkbox" id="r19" aria-label="Skim composition and config"><span class="f">src/api.ts · src/worker.ts · src/app.ts · src/config/index.ts · src/db/index.ts · src/lib/mainModule.ts · scripts/db.ts</span><span class="m">about 700 lines</span>
+        <span class="why">Wiring, middleware order, production refusals (H1), graceful shutdown. Read <code>src/db/index.ts</code> lines 6 to 23 once: those session settings are assumptions the rest leans on.</span><span class="tests"><b>Tests</b> unit/config, api, mainGuard, dbScript; integration/worker, workerLifecycle, api.queue; contract/shell.*.</span></li>
+      <li><input type="checkbox" id="r20" aria-label="Skim middleware, logging, metrics, presenters"><span class="f">src/middleware/* · src/lib/logger.ts · metrics.ts · safeMetrics.ts · src/admin/presenter.ts · listNotifications.ts · getImport.ts</span><span class="m">conventional</span>
+        <span class="why">Rate limit (M7), request context, logging and metrics plumbing, response shaping.</span><span class="tests"><b>Tests</b> unit/requestContext, metrics.request, lib.pageSize, urls; integration/metrics.jobs.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section id="lifecycle">
+  <h2>Delivery lifecycle</h2>
+  <p class="sub">A delivery is one notification for one account. Its state is not a column; it is whether <code>sent_at</code> is set and which table the row is in.</p>
+  <figure>
+    <div class="dia">
+    <svg viewBox="0 0 900 240" role="img" aria-label="A delivery is inserted either as scheduled or directly as live. Scheduled rows are released to live by due_send or deleted if cancelled. Live rows are moved to the archive table by expiry.">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+      <rect class="bx" x="20" y="150" width="150" height="60" rx="6"/>
+      <text class="tm" x="95" y="176" text-anchor="middle">insertDeliveries()</text>
+      <text class="ts" x="95" y="194" text-anchor="middle">the only insert path</text>
+
+      <rect class="bx-acc" x="270" y="30" width="170" height="64" rx="6"/>
+      <text class="tb" x="355" y="56" text-anchor="middle">Scheduled</text>
+      <text class="tm" x="355" y="76" text-anchor="middle">sent_at IS NULL</text>
+
+      <rect class="bx-acc" x="530" y="150" width="150" height="60" rx="6"/>
+      <text class="tb" x="605" y="176" text-anchor="middle">Live</text>
+      <text class="ts" x="605" y="194" text-anchor="middle">sent_at set · visible</text>
+
+      <rect class="bx-bad" x="530" y="30" width="150" height="50" rx="6"/>
+      <text class="tb" x="605" y="52" text-anchor="middle">Deleted</text>
+      <text class="ts" x="605" y="68" text-anchor="middle">row removed</text>
+
+      <rect class="bx" x="760" y="150" width="130" height="60" rx="6"/>
+      <text class="tb" x="825" y="176" text-anchor="middle">Archived</text>
+      <text class="ts" x="825" y="194" text-anchor="middle">moved to archive table</text>
+
+      <path class="ar" d="M95,150 V62 H268" marker-end="url(#a2)"/>
+      <text class="tl" x="105" y="55">delay or future liveDate</text>
+      <line class="ar" x1="170" y1="180" x2="528" y2="180" marker-end="url(#a2)"/>
+      <text class="tl" x="350" y="198" text-anchor="middle">due now: sent immediately</text>
+      <line class="ar" x1="440" y1="55" x2="528" y2="55" marker-end="url(#a2)"/>
+      <text class="tl" x="484" y="47" text-anchor="middle">cancelled</text>
+      <path class="ar" d="M400,94 V125 H605 V148" marker-end="url(#a2)"/>
+      <text class="tl" x="410" y="118">due_send releases</text>
+      <line class="ar" x1="680" y1="180" x2="758" y2="180" marker-end="url(#a2)"/>
+      <text class="tl" x="719" y="172" text-anchor="middle">expiry</text>
+    </svg>
+    </div>
+    <figcaption>Cancelled scheduled rows are deleted by three callers that share one rule: the <code>cancel_scheduled</code> job (prompt cleanup), <code>due_send</code> (enforcement at release time) and housekeeping (safety net). Live rows are never cancelled; removing a notification hides them at read time instead. Expiry archives live rows sent before the first day of the previous UTC month.</figcaption>
+  </figure>
+
+  <h3>The cancellation rule</h3>
+  <p>An unsent delivery is cancelled when its notification is removed, or inactive, or was deactivated at or after the delivery was created (<code>d.created_at &lt;= n.cancelled_before</code>). The third clause is what keeps old scheduled rows dead after a notification is switched back on. It works only because both timestamps are written from the application clock, which is why every caller passes a fresh <code>clock.now()</code> into <code>insertDeliveries</code>.</p>
+</section>
+
+<section id="flows">
+  <h2>Three flows, one insert</h2>
+  <p class="sub">The three notification types differ in what starts them and in the key that prevents a second delivery.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Type</th><th>Started by</th><th>Job</th><th>Audience</th><th>Dedupe key</th><th>Visible when</th></tr></thead>
+    <tbody>
+      <tr><td><strong>filter</strong></td><td>Admin creates or activates; daily rescan; an account change</td><td><code>fanout_filter</code>, <code>account_recheck</code></td><td>Accounts matching the stored filters, read from <code>accounts</code></td><td>UTC month, e.g. <code>2026-10</code>. One delivery per account per month.</td><td>Immediately</td></tr>
+      <tr><td><strong>event</strong></td><td>Host code calls <code>NotificationTrigger.record()</code></td><td><code>event_delivery</code></td><td>The one account in the event</td><td>The caller's <code>occurrenceKey</code></td><td>Occurrence time plus <code>delay</code> days</td></tr>
+      <tr><td><strong>csv</strong></td><td>Admin uploads a file of account ids</td><td><code>process_import</code></td><td>Ids in the file that exist</td><td>The constant <code>import</code>. Once per account, ever.</td><td>At <code>liveDate</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>Every admin write follows the same shape: commit the row, then enqueue, and if the enqueue fails log it and return success anyway (<code>src/admin/enqueueAfterCommit.ts</code>). That is only safe because a timer later notices the missing work. When you read a handler, find its safety net: rescan and housekeeping for fan-outs, housekeeping for stalled imports, <code>due_send</code> for cancellations. Event jobs have none; a failed trigger enqueue is logged and lost.</p>
+</section>
+
+<section id="queue">
+  <h2>Queue and timers</h2>
+  <p class="sub">Jobs are rows in a table. A worker owns a job only while its lease is fresh.</p>
+  <figure>
+    <div class="dia">
+    <svg viewBox="0 0 820 210" role="img" aria-label="A job moves from queued to running when claimed. From running it becomes done on success, returns to queued on failure with backoff or on lease expiry, or becomes dead after the fifth failed attempt.">
+      <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+      <rect class="bx-acc" x="20" y="70" width="130" height="56" rx="6"/>
+      <text class="tb" x="85" y="94" text-anchor="middle">queued</text>
+      <text class="ts" x="85" y="111" text-anchor="middle">waiting for run_at</text>
+      <rect class="bx-acc" x="320" y="70" width="130" height="56" rx="6"/>
+      <text class="tb" x="385" y="94" text-anchor="middle">running</text>
+      <text class="ts" x="385" y="111" text-anchor="middle">leased to one worker</text>
+      <rect class="bx" x="670" y="20" width="130" height="50" rx="6"/>
+      <text class="tb" x="735" y="42" text-anchor="middle">done</text>
+      <text class="ts" x="735" y="58" text-anchor="middle">deleted after 7 days</text>
+      <rect class="bx-bad" x="670" y="130" width="130" height="50" rx="6"/>
+      <text class="tb" x="735" y="152" text-anchor="middle">dead</text>
+      <text class="ts" x="735" y="168" text-anchor="middle">purged after 30 days</text>
+
+      <line class="ar" x1="150" y1="86" x2="318" y2="86" marker-end="url(#a3)"/>
+      <text class="tl" x="234" y="79" text-anchor="middle">claim · attempts + 1</text>
+      <line class="ar" x1="320" y1="110" x2="152" y2="110" marker-end="url(#a3)"/>
+      <text class="tl" x="234" y="125" text-anchor="middle">error · retry in 2ⁿ min</text>
+      <path class="ar" d="M385,126 V180 H85 V128" marker-end="url(#a3)"/>
+      <text class="tl" x="235" y="173" text-anchor="middle">no heartbeat for 15 min · upkeep re-queues</text>
+      <path class="ar" d="M450,86 H560 V45 H668" marker-end="url(#a3)"/>
+      <text class="tl" x="660" y="38" text-anchor="end">handler returned</text>
+      <path class="ar" d="M450,110 H560 V155 H668" marker-end="url(#a3)"/>
+      <text class="tl" x="660" y="173" text-anchor="end">5th failure · onDead</text>
+    </svg>
+    </div>
+    <figcaption>Delivery is at-least-once, so every handler has to be safe to run twice or concurrently. Each write a worker makes to its job is fenced on <code>status = 'running' AND locked_by = me AND attempts = mine</code>; a worker that lost its lease changes zero rows and discards its result. An attempt is spent at claim time, not at failure.</figcaption>
+  </figure>
+
+  <h3>Timers</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Timer</th><th>Runs on</th><th>Default cadence</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>due_send</code></td><td>every worker</td><td class="n">every 60 s</td><td>Releases due scheduled deliveries in batches of 1,000; deletes the cancelled ones.</td></tr>
+      <tr><td><code>rescan</code></td><td>leader</td><td class="n">06:00 UTC daily, and 00:05 on the 1st</td><td>Enqueues a full fan-out for every active filter notification.</td></tr>
+      <tr><td><code>expiry</code></td><td>leader</td><td class="n">01:00 UTC daily</td><td>Moves old live deliveries to the archive table, up to 2,000,000 rows a run.</td></tr>
+      <tr><td><code>housekeeping</code></td><td>leader</td><td class="n">every 5 min</td><td>Re-enqueues fan-outs with no delivery this month and imports idle for 10 minutes; deletes cancelled rows; purges old files and dead jobs. (Its deliveries-per-account gauge was removed in 938fdee.)</td></tr>
+    </tbody>
+  </table></div>
+  <p>The leader is whichever worker holds a MySQL named lock on a dedicated connection. Ownership is re-verified against the database before each leader-only run, and the code states that a brief two-leader window is still possible, so leader-only timers are written to be idempotent.</p>
+</section>
+
+<section id="locks">
+  <h2>Lock map</h2>
+  <p class="sub">The concurrency design in one table. Almost nothing waits for a lock: writers either skip locked rows or fail fast. Use this to check the header comments as you read.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Actor</th><th>Notification row</th><th>Delivery rows</th><th>When blocked</th></tr></thead>
+    <tbody>
+      <tr><td>Admin PATCH<br><span class="mono">updateNotification.ts:22</span></td><td><code>FOR UPDATE NOWAIT</code></td><td>none</td><td>Returns 409 "another update is in progress"</td></tr>
+      <tr><td>Cancelled-row delete<br><span class="mono">cancellation.ts:49</span></td><td><code>FOR SHARE NOWAIT</code></td><td><code>FOR UPDATE SKIP LOCKED</code></td><td>Ends the run quietly; a later pass finishes</td></tr>
+      <tr><td><code>due_send</code><br><span class="mono">dueSend.ts:33</span></td><td>none, by design (plain read inside <code>EXISTS</code>)</td><td><code>FOR UPDATE SKIP LOCKED</code></td><td>Skips; another worker takes those rows</td></tr>
+      <tr><td><code>expiry</code><br><span class="mono">expiry.ts:51</span></td><td>none</td><td><code>FOR UPDATE SKIP LOCKED</code> by primary key</td><td>Skips; stops if a full batch locks nothing</td></tr>
+      <tr><td>Job claim<br><span class="mono">dbQueue.ts:226</span></td><td colspan="2"><code>jobs</code> rows <code>FOR UPDATE SKIP LOCKED</code> through a forced index</td><td>Skips to the next due job</td></tr>
+      <tr><td>Import run create<br><span class="mono">createImportRun.ts:46</span></td><td colspan="2"><code>imports</code> row <code>FOR UPDATE</code> (the one place that waits)</td><td>Waits for the other request</td></tr>
+    </tbody>
+  </table></div>
+  <p>Two side effects are documented in the code and worth knowing before you integrate. Releasing a delivery takes a shared lock on the matching <code>accounts</code> row until the batch commits (<code>dueSend.ts:5-10</code>). Deleting an account cascades into deliveries in the opposite lock order to an expiry batch and can deadlock with it; the comment at <code>expiry.ts:12-15</code> says the host's account deleter must retry.</p>
+</section>
+
+<section id="findings">
+  <h2>Findings</h2>
+  <p class="sub">Ordered by severity. None is a wrong-result bug in the common path; the high ones are about whether and how this can be deployed.</p>
+
+  <h3>High: decide before integrating</h3>
+
+  <div class="find">
+    <h4><span class="sev h">H1</span><span class="sev g">Owner: no action (build-issues 1)</span>Neither process can start in production, and the image defaults to production</h4>
+    <p class="loc">src/config/index.ts:99-103 · src/api.ts:19-27 · src/queue/index.ts:8-17 · Dockerfile:15</p>
+    <p class="fix"><b>Status:</b> Owner decision 2026-10-07 on build-issues 1: no action. The real auth provider and queue adapter remain unbuilt features; the production refusal stays as the guard.</p>
+    <p>The only auth provider trusts an <code>X-Account-Id</code> header, and the only queue is the <code>jobs</code> table. Both are refused when <code>NODE_ENV=production</code>, and no alternative exists. The Dockerfile sets <code>NODE_ENV=production</code>, so the built image exits on start for the API and the worker alike. CI only checks that it refuses to start without config.</p>
+    <p>The guard is an exact string match. Run with any other value (<code>staging</code>, or unset) and the service accepts any caller's claimed account id, with accounts 1, 2 and 3 as admins by default.</p>
+    <p class="fix"><b>Do:</b> treat the real <code>AuthProvider</code> and the real <code>Queue</code> adapter as unbuilt features, not configuration. Consider inverting the guard so stand-ins need an explicit opt-in rather than the absence of one word.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev h">H2</span><span class="sev g">Owner: deferred</span>The event flow has no caller and no defined way to be called</h4>
+    <p class="loc">src/trigger/index.ts:57-152 · src/admin/createEvent.ts:1 · package.json</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: the event flow's caller is the business code importing NotificationTrigger; how it is called is decided when integrating.</p>
+    <p><code>NotificationTrigger</code> is the only way an event or an account change reaches the system, and nothing in this repo calls it. There is no HTTP endpoint for it, although a comment in <code>createEvent.ts</code> refers to "the trigger endpoint". <code>package.json</code> has no <code>main</code> or <code>exports</code>, so how the host imports the class is undefined.</p>
+    <p>When the host does call <code>createNotificationTrigger(config)</code>, it opens its own MySQL pool into this service's database and keeps it for the life of the process. In production that call throws, for the reason in H1.</p>
+    <p class="fix"><b>Do:</b> pick the integration shape (published package, or an internal HTTP endpoint) and write the first real caller. Until then two of the five job types are exercised only by tests.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev h">H3</span><span class="sev g">Owner: deferred</span>The service is bound to the host's <code>accounts</code> table at the database level</h4>
+    <p class="loc">migrations/20261001000100_initial.ts:50 · src/eligibility/accountsSchema.ts · src/jobs/processImport.ts:87 · src/lib/insertDeliveries.ts:58</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: the accounts coupling (foreign key, cascade, lock interactions) is accepted for now; see build-issues 61 and 65.</p>
+    <p>Deliveries carry a foreign key to <code>accounts(id)</code> with <code>ON DELETE CASCADE</code>; eligibility is a direct SQL query over four <code>accounts</code> columns. This forces the service into the same MySQL schema as the host and makes the host's account writes participate in this service's locking: account deletes cascade through delivery rows and can deadlock with expiry, and each <code>due_send</code> batch holds shared locks on up to 1,000 account rows.</p>
+    <p>Column names are isolated in one adapter file, which helps with renames but not with the coupling itself. There is also no index requirement stated for the filter columns; a fan-out is a range scan over account ids with the filter applied per row.</p>
+    <p class="fix"><b>Do:</b> confirm with whoever owns <code>accounts</code> that a foreign key from another service and these lock interactions are acceptable. If not, this is a schema change, and <code>insertDeliveries</code> relies on the foreign key to detect unknown accounts.</p>
+  </div>
+
+  <h3>Medium: cost and operations</h3>
+
+  <div class="find">
+    <h4><span class="sev m">M1</span><span class="sev g">Owner: deferred</span>Fan-out work scales with notifications × accounts, every day</h4>
+    <p class="loc">src/scheduler/rescan.ts:18-31 · src/jobs/fanoutFilter.ts:62-104 · src/scheduler/housekeeping.ts:38-52</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: the daily rescan cost is accepted for now; the mitigations (spread the schedule, scan accounts once for all filters, change-tracked rescans) are noted for later.</p>
+    <p>The daily rescan enqueues a fan-out for every active filter notification, and each fan-out walks the entire accounts table in 10,000-id ranges with a <code>NOT EXISTS</code> against deliveries. After the first run of the month almost every pass finds nothing to do, but still scans everything.</p>
+    <p>Housekeeping adds to this: every five minutes it enqueues a fan-out for any active filter notification with no delivery this month. A notification whose audience is empty therefore gets 288 full-table fan-outs a day, indefinitely (the comment calls this "by design"). Nothing prevents several identical fan-outs being queued at once.</p>
+    <p class="fix"><b>Do:</b> estimate with real numbers (active filter notifications × account count). Recording "fan-out completed for month M" on the notification would remove most of the repeat work.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev m">M2</span><span class="sev g">Resolved in c35e87e</span>Every event re-evaluates the account against every active filter notification</h4>
+    <p class="loc">src/jobs/eventDelivery.ts:140 · src/jobs/accountRecheck.ts:28-34, 64</p>
+    <p class="fix"><b>Resolved:</b> <code>recheckAccount</code> now reads the account's deliveries for the month once, up front, and skips every notification already delivered, so those no longer cost an eligibility query or a duplicate insert. The finding as first written follows.</p>
+    <p>Each <code>event_delivery</code> job ends with <code>recheckAccount</code>: for each active filter notification, one eligibility query and, on a match, one insert attempt, all on the writer. There is no check for "already delivered this month" before the insert, so most attempts are duplicates that the unique key absorbs. Each such duplicate also consumes an auto-increment id.</p>
+    <p class="fix"><b>Do:</b> multiply expected events per day by active filter notifications. If that is large, check existing deliveries for the account in one query first.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev m">M3</span><span class="sev g">Resolved in ab7cf3a</span>The scheduler never catches up on a missed run</h4>
+    <p class="loc">src/scheduler/index.ts:5-7, 61-68 · src/scheduler/schedule.ts:7-9, 60</p>
+    <p class="fix"><b>Resolved:</b> on becoming leader the scheduler reads <code>scheduled_runs</code> once; a leader-only cron timer whose most recent due time (<code>Schedule.previousDue</code>) is later than its last start runs once at the next tick. One catch-up run per timer, never one per missed occurrence; a timer with no recorded start (NULL) is not caught up. The finding as first written follows.</p>
+    <p>A cron timer fires only if a tick happens during its matching minute. Last-start times are held in memory; the <code>scheduled_runs</code> table is written on every run and never read. If no worker is leader during 01:00 UTC (a deploy, a crash, a 30-second leader handover), that day's expiry does not run. The same applies to the 06:00 rescan and the month-start rescan at 00:05 on the 1st, which is the run that sends each month's filter notifications promptly.</p>
+    <p class="fix"><b>Do:</b> on start, read <code>scheduled_runs</code> and run anything whose last start predates its most recent due time. The table already holds what is needed.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev m">M4</span><span class="sev g">Owner: deferred</span>Deploys cost long jobs an attempt and a 15-minute stall</h4>
+    <p class="loc">src/worker.ts:48, 83-87 · src/queue/dbQueue.ts:254, 379-405</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: worker shutdown and lease behaviour belong to the queue stand-in, which the company queue replaces.</p>
+    <p>On shutdown the worker waits 30 seconds for running handlers, then exits. A job still running stays marked <code>running</code> until its 15-minute lease expires and upkeep re-queues it. Attempts are counted at claim time, so each interruption spends one of five. Fan-outs are the longest jobs and the most exposed: five unlucky deploys dead-letter one, after which only the next daily rescan recovers it.</p>
+    <p class="fix"><b>Do:</b> on shutdown, release unfinished jobs back to <code>queued</code> without spending the attempt, or give handlers a stop signal to check between chunks.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev m">M5</span><span class="sev g">Owner: deferred</span>Queue upkeep scans every finished job, on every worker, every minute</h4>
+    <p class="loc">src/queue/dbQueue.ts:426-433 · migrations/20261001000200_jobs.ts:16</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: queue upkeep cost belongs to the queue stand-in, which the company queue replaces.</p>
+    <p>Old <code>done</code> rows are deleted by <code>status = 'done' AND locked_at &lt; cutoff</code>, but the only index is <code>(status, run_at)</code>. Each pass reads every done row from the last seven days to find none to delete. With one job per shipment or enrolment this grows steadily, and every worker repeats it each minute.</p>
+    <p class="fix"><b>Do:</b> if the table queue survives beyond development, add <code>(status, locked_at)</code> or run this delete from housekeeping on the leader only.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev m">M6</span><span class="sev g">Owner: deferred</span>CSV uploads are parsed in the API process and stored in MySQL</h4>
+    <p class="loc">src/admin/createImport.ts:30-34, 89-92, 122 · src/admin/csvShape.ts:15-33 · migrations/20261001000100_initial.ts:80</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: CSV parsing in the API process and file storage in MySQL are accepted at the stated caps; revisit if upload sizes grow.</p>
+    <p>An upload of up to 10 MiB is buffered in memory, decoded, parsed to an array of up to a million ids on the request path, then written as one <code>MEDIUMBLOB</code> row. Several concurrent uploads multiply that; nothing limits concurrency. <code>MEDIUMBLOB</code> holds 16 MiB, so setting <code>CSV_MAX_BYTES</code> above that turns valid uploads into a 500 at insert time.</p>
+    <p class="fix"><b>Do:</b> cap <code>CSV_MAX_BYTES</code> at the column size in config validation. Longer term the file belongs in object storage.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev m">M7</span><span class="sev g">Owner: deferred</span>Rate limits are per process and skip unauthenticated traffic</h4>
+    <p class="loc">src/middleware/rateLimit.ts:17-26 · src/app.ts:61-62</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07: per-instance limits were accepted in the design (§13.6); the unauthenticated-traffic half is on the test-audit list (group D).</p>
+    <p>Counters live in each API instance's memory, so the effective limit is the configured one times the number of instances, and it resets on restart. The limiter runs after auth, so requests that fail with 401 are never counted.</p>
+    <p class="fix"><b>Do:</b> fine as a stand-in. Decide whether the real limit lives at a gateway before relying on these numbers.</p>
+  </div>
+
+  <h3>Low: edges and consistency</h3>
+
+  <div class="find">
+    <h4><span class="sev l">L1</span><span class="sev g">Owner: not important for now (build-issues 76)</span>Same-second deactivate and reactivate can cancel a fresh delivery</h4>
+    <p class="loc">src/lib/cancellation.ts:14 · src/admin/updateNotification.ts:47</p>
+    <p class="fix"><b>Status:</b> Owner decision 2026-10-07 on build-issues 76: not important for now; left as built.</p>
+    <p>Both timestamps are whole seconds and the rule uses <code>&lt;=</code>. Deactivate and reactivate an event notification within one second, and a delayed delivery created later in that same second is treated as cancelled and deleted. It needs an admin double-toggle and an event in the same second, so it is rare, but it is a silent loss.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L2</span><span class="sev g">Owner: deferred (scheduler plumbing)</span>A slow leader check lets overlapping ticks pick the same timer</h4>
+    <p class="loc">src/scheduler/index.ts:115-127</p>
+    <p class="fix"><b>Status:</b> Deferred by the owner 2026-10-07. Scheduler mechanics are plumbing, not domain behaviour; leader-only timers are idempotent, so an overlapping pick costs a duplicate run, never a duplicate send. Revisit with the other before-production items.</p>
+    <p>A tick builds its due list, awaits the leader verification (up to 5 seconds), and only then records the start. Ticks fire every second, so later ticks see the same timer as due. Usually the second one records a spurious <code>skipped</code>; if the first run finishes fast enough the timer runs twice. Timers are idempotent, so the effect is noise in metrics and duplicate enqueues from rescan.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L3</span><span class="sev g">Owner: intended (build-issues 111)</span>A product rule is hard-coded in a job handler</h4>
+    <p class="loc">src/jobs/eventDelivery.ts:90</p>
+    <p class="fix"><b>Status:</b> Owner decision 2026-10-07 (build-issues 111): the publication date is set elsewhere; the business code reports the event at publication and the notification goes live then, ignoring any delay. Intended behaviour, pinned by an end-to-end test.</p>
+    <p><code>preenrollAudiobook</code> events always use a delay of zero, whatever the notification's <code>delay</code> says. The admin API still accepts and returns a delay for those notifications. Check that this matches the spec and that the admin UI will not show a value that is ignored.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L4</span><span class="sev g">Resolved in bba05f3</span>One Idempotency-Key can succeed on two different endpoints at once</h4>
+    <p class="loc">src/admin/idempotentInsert.ts:12, 41-52 · src/admin/idempotency.ts:17</p>
+    <p class="fix"><b>Resolved:</b> keys are now scoped to one endpoint's table (filter and event share <code>notifications</code>, told apart by <code>request_endpoint</code>). The same key on an import upload or a run is a different request, and the racy cross-table reads are gone. The finding as first written follows.</p>
+    <p>Keys are unique per table, across three tables. The cross-table check is a read before the insert, so two concurrent requests with the same key on different endpoints can both be accepted. The code documents this. It only matters if a client reuses keys across endpoints.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L5</span><span class="sev g">Owner: confirmed (build-issues 53)</span>Almost all reads go to the writer</h4>
+    <p class="loc">src/member/visibility.ts:22 · src/admin/listNotifications.ts:49</p>
+    <p class="fix"><b>Status:</b> Owner decision 2026-10-07 on build-issues 53: confirmed. Only the fan-out's eligibility scans read the replica; the recheck and the API read the writer so a lagging replica cannot miss a just-changed account or show a stale notification.</p>
+    <p>A reader pool is created in both processes but used only by fan-out (the one metric that also used it was removed in 938fdee). The member list, which is the high-traffic read, queries the writer. That may be deliberate for read-your-writes after a click; it is not stated.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L6</span><span class="sev g">By spec (B4; owner confirmed)</span>Deactivated notifications stay visible to members who already received them</h4>
+    <p class="loc">src/member/visibility.ts:35-38</p>
+    <p class="fix"><b>Status:</b> This is the product rule, not a defect: the spec says making a notification inactive "will not remove" notifications that already went out; only remove-from-app hides them. Confirmed by the owner 2026-10-07 (build-issues 111 review).</p>
+    <p>Member visibility checks <code>removed</code> only. Switching a notification off stops new deliveries and cancels scheduled ones, but existing live deliveries remain in members' lists. Confirm that is the intended meaning of "inactive".</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L7</span><span class="sev g">Resolved in 938fdee</span>The most elaborate code serves one metric</h4>
+    <p class="loc">src/scheduler/housekeeping.ts (gauge removed) · docs/metrics.md</p>
+    <p class="fix"><b>Resolved:</b> the gauge, its binary search, safety margin and time budget are removed. <code>docs/metrics.md</code> now says the signal shows in <code>event_delivery_inserted</code> and <code>account_recheck_deliveries_written</code>, and that a per-account view would need a <code>created_at</code> index. The finding as first written follows.</p>
+    <p>To report deliveries per account per day without adding an index, housekeeping binary-searches the primary key for the first row created today, backs off by a 100,000-id safety margin, then runs a windowed aggregate under a 5-second time limit. It works, but it is a lot of reasoning to maintain for a gauge. An index on <code>created_at</code>, or dropping the metric, would be simpler.</p>
+  </div>
+
+  <div class="find">
+    <h4><span class="sev l">L8</span>Small inconsistencies<span class="sev g">three of four resolved in 8b92366</span></h4>
+    <ul class="tight">
+      <li><span class="sev g">Resolved in 8b92366</span> Dead-letter logs now carry the payload's id fields only (<code>src/jobs/index.ts:20-31</code>). As first written: <code>src/jobs/index.ts:23</code> logs the whole job payload on dead-letter, while every other log line is careful to log ids only. Payloads hold only ids and occurrence keys today.</li>
+      <li><span class="sev g">Resolved in 8b92366</span> One helper, <code>src/lib/mainModule.ts</code>, is now used by <code>api.ts</code>, <code>worker.ts</code> and <code>scripts/db.ts</code>. As first written: <code>src/api.ts:73</code> has a symlink-tolerant "run as main" check; <code>src/worker.ts:173</code> and <code>scripts/db.ts:73</code> use a simpler one that fails silently when started through a symlink.</li>
+      <li><span class="sev g">Resolved in 8b92366</span> The health check now probes <code>HEALTH_PORT</code> when set, otherwise <code>PORT</code> then <code>WORKER_HEALTH_PORT</code> (<code>Dockerfile:23-27</code>). As first written: <code>Dockerfile:23-26</code>: the health check probes the API port, so the worker container reports unhealthy unless <code>HEALTH_PORT</code> is set by hand.</li>
+      <li>A notification stuck with unusable filters fails its fan-out five times, dead-letters, and is re-enqueued by every rescan and housekeeping pass forever (<code>fanoutFilter.ts:43-57</code>). The API validation should prevent the state, so this only matters after a manual database edit. <b>Left as is on purpose:</b> the owner reviewed it; the dead-job alarm is the intended pressure to fix the row.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="solid">
+  <h2>What holds up</h2>
+  <p class="sub">Things you can lean on while reading, so you can spend attention elsewhere.</p>
+  <ul class="tight">
+    <li><span class="sev g">single paths</span> One insert function for deliveries, one SQL definition of "cancelled", one visibility query for members, one CSV reader shared by upload validation and the job. Changes to a rule have one place to go.</li>
+    <li><span class="sev g">idempotent handlers</span> Every job handler tolerates duplicates and concurrent copies of itself, which is what makes the "enqueue failed, carry on" pattern and at-least-once delivery safe.</li>
+    <li><span class="sev g">injected clock</span> All time comes from <code>deps.clock</code> and is bound as a parameter; no SQL <code>NOW()</code>. This is why the time-dependent rules are testable and why the cancellation comparison is sound.</li>
+    <li><span class="sev g">no hidden globals</span> Two composition roots (<code>api.ts</code>, <code>worker.ts</code>) build a <code>Deps</code> object passed everywhere. The one module-level cache is in <code>trigger/index.ts:127</code>.</li>
+    <li><span class="sev g">strict input</span> zod strict objects reject unknown keys on every body and query; text fields refuse control and direction-override characters; cursors are validated and bound to the filters they were issued under.</li>
+    <li><span class="sev g">log hygiene</span> The database layer strips interpolated SQL from errors (<code>src/db/index.ts:44</code>) so notification content does not reach logs.</li>
+    <li><span class="sev g">clean build</span> Typecheck and lint pass with no suppressions; there are no <code>TODO</code> or <code>FIXME</code> markers and nine uses of <code>any</code> in total.</li>
+  </ul>
+  <div class="note"><strong>A caution on the tests.</strong> 2.4 lines of test per line of source is a lot, and they were written by the same agent as the code, so they confirm the code does what its author intended. They cannot tell you whether the intent matches the spec. When you read a tier 1 file, open its integration test and check what the assertions actually pin down.</div>
+</section>
+
+</div>
+<script>
+(function () {
+  var KEY = 'nc-audit-read';
+  var state = {};
+  try { state = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { state = {}; }
+  var boxes = document.querySelectorAll('ol.read input[type="checkbox"]');
+  for (var i = 0; i < boxes.length; i++) {
+    (function (box) {
+      var li = box.closest('li');
+      box.checked = !!state[box.id];
+      li.classList.toggle('done', box.checked);
+      box.addEventListener('change', function () {
+        state[box.id] = box.checked;
+        li.classList.toggle('done', box.checked);
+        try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+      });
+    })(boxes[i]);
+  }
+})();
+</script>
+</body>
+</html>
